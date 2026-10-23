@@ -1,10 +1,12 @@
 package rs117.hd.utils;
 
+import lombok.RequiredArgsConstructor;
 import net.runelite.api.*;
 import net.runelite.api.Point;
 import net.runelite.api.coords.LocalPoint;
 import net.runelite.api.model.Jarvis;
 import rs117.hd.scene.GamevalManager;
+import rs117.hd.utils.Util.Ray;
 
 import javax.inject.Inject;
 import javax.inject.Singleton;
@@ -13,11 +15,10 @@ import java.awt.geom.Point2D;
 import java.util.*;
 import java.util.List;
 
-import static net.runelite.api.Perspective.getTileHeight;
-import static net.runelite.api.Perspective.getCanvasTileAreaPoly;
-import static net.runelite.api.Perspective.modelToCanvas;
+import static net.runelite.api.Perspective.*;
 import static rs117.hd.utils.HDUtils.HIDDEN_HSL;
 import static rs117.hd.utils.MathUtils.*;
+import static rs117.hd.utils.Util.rayTriangle;
 
 @Singleton
 public final class SceneGeometry {
@@ -127,6 +128,7 @@ public final class SceneGeometry {
         int originalSize = hits.size();
         Tile[][][] tiles = scene.getExtendedTiles();
         int sceneOffset = worldView.isTopLevel() ? HDUtils.EXTENDED_SCENE_OFFSET : 0;
+        int tileSize = LOCAL_TILE_SIZE;
         for (int plane = tiles.length - 1; plane >= 0; plane--) {
             for (int bridgePass = 1; bridgePass >= 0; bridgePass--) {
                 for (int x = 0; x < tiles[plane].length; x++) {
@@ -137,15 +139,16 @@ public final class SceneGeometry {
                         if (tile == null || !isVisible(tile) ||
                                 !isTileVisibleByRoofRemoval(scene, plane, x - sceneOffset, y - sceneOffset)) continue;
 
-                        LocalPoint location = tile.getLocalLocation();
-                        if (location == null) continue;
+                        int tx = (x - sceneOffset) * tileSize;
+                        int ty = (y - sceneOffset) * tileSize;
+                        float h00 = worldView.getTileHeight(tx, ty, plane);
+                        float h10 = worldView.getTileHeight(tx + tileSize, ty, plane);
+                        float h11 = worldView.getTileHeight(tx + tileSize, ty + tileSize, plane);
+                        float h01 = worldView.getTileHeight(tx, ty + tileSize, plane);
 
-                        Shape polygon = getCanvasTileAreaPoly(client, location, 1, 1, tile.getPlane(), 0);
-                        if (polygon == null || !polygon.contains(cursor)) continue;
-
-                        float height = getTileHeight(client, location, tile.getPlane());
-                        float distance = (height - ray.z) / ray.dz;
-                        if (distance >= 0) hits.add(new Hit(new Candidate(tile, null, distance, worldView, plane, x, y)));
+                        float t = rayTriangle(ray, tx, ty, h00, tx + tileSize, ty, h10, tx + tileSize, ty + tileSize, h11, Float.POSITIVE_INFINITY);
+                        if (t < 0) t = rayTriangle(ray, tx, ty, h00, tx + tileSize, ty + tileSize, h11, tx, ty + tileSize, h01, Float.POSITIVE_INFINITY);
+                        if (t >= 0) hits.add(new Hit(new Candidate(tile, null, t, worldView, plane, x, y)));
                     }
                 }
             }
@@ -339,7 +342,7 @@ public final class SceneGeometry {
 
     private void addIntersection(Object object, Bounds bounds, Ray ray, WorldView worldView,
             int plane, int sceneX, int sceneY, List<Candidate> candidates) {
-        float distance = bounds.intersect(ray);
+        float distance = Util.rayIntersectAABB(ray, bounds.minX, bounds.minY, bounds.minZ, bounds.maxX, bounds.maxY, bounds.maxZ);
         if (distance >= 0) candidates.add(new Candidate(object, bounds, distance, worldView, plane, sceneX, sceneY));
     }
 
@@ -483,34 +486,8 @@ public final class SceneGeometry {
         }
     }
 
-    private static final class Ray {
-        final float x, y, z, dx, dy, dz;
-
-        Ray(float x, float y, float z, float dx, float dy, float dz) {
-            this.x = x;
-            this.y = y;
-            this.z = z;
-            this.dx = dx;
-            this.dy = dy;
-            this.dz = dz;
-        }
-    }
-
+    @RequiredArgsConstructor
     private static final class Bounds {
         final float minX, minY, minZ, maxX, maxY, maxZ;
-
-        Bounds(float minX, float minY, float minZ, float maxX, float maxY, float maxZ) {
-            this.minX = minX;
-            this.minY = minY;
-            this.minZ = minZ;
-            this.maxX = maxX;
-            this.maxY = maxY;
-            this.maxZ = maxZ;
-        }
-
-        float intersect(Ray ray) {
-            return Util.rayIntersectAABB(ray.x, ray.y, ray.z, ray.dx, ray.dy, ray.dz,
-                    minX, minY, minZ, maxX, maxY, maxZ);
-        }
     }
 }
