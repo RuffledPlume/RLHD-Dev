@@ -1,5 +1,6 @@
 package rs117.hd;
 
+import com.google.inject.Injector;
 import com.google.inject.Provides;
 import java.awt.event.KeyEvent;
 import javax.inject.Inject;
@@ -8,6 +9,7 @@ import javax.swing.SwingUtilities;
 import lombok.extern.slf4j.Slf4j;
 import net.runelite.api.events.*;
 import net.runelite.api.Client;
+import net.runelite.api.hooks.DrawCallbacks;
 import net.runelite.client.callback.ClientThread;
 import net.runelite.client.config.ConfigManager;
 import net.runelite.client.eventbus.Subscribe;
@@ -17,23 +19,22 @@ import net.runelite.client.input.KeyManager;
 import net.runelite.client.plugins.Plugin;
 import net.runelite.client.plugins.PluginDependency;
 import net.runelite.client.plugins.PluginDescriptor;
-import net.runelite.client.ui.ClientToolbar;
-import net.runelite.client.ui.NavigationButton;
-import net.runelite.client.util.ImageUtil;
 import rs117.hd.overlays.InspectorPanel;
 import rs117.hd.overlays.InspectorSelectionOverlay;
 import rs117.hd.overlays.ProfilerOverlay;
 import rs117.hd.overlays.ProfilerUI;
 import rs117.hd.scene.GamevalManager;
 import rs117.hd.scene.ModelOverrideManager;
+import rs117.hd.utils.DrawCallbacksRedirector;
 import rs117.hd.utils.DeveloperTools;
+import rs117.hd.utils.SceneGeometry;
 
 @Slf4j
 @Singleton
 @PluginDescriptor(
 	name = "117 HD Developer",
-	description = "Inspector, development and profiling tools for 117 HD",
-	tags = {"117", "hd", "developer", "development", "inspector", "profiler"}
+	description = "development and profiling tools for 117 HD",
+	tags = {"117", "hd", "developer", "development", "profiler"}
 )
 @PluginDependency(HdPlugin.class)
 public class DeveloperPlugin extends Plugin implements KeyListener {
@@ -46,9 +47,6 @@ public class DeveloperPlugin extends Plugin implements KeyListener {
 
 	@Inject
 	private ConfigManager configManager;
-
-	@Inject
-	private ClientToolbar clientToolbar;
 
 	@Inject
 	private Client client;
@@ -72,14 +70,22 @@ public class DeveloperPlugin extends Plugin implements KeyListener {
 	private InspectorSelectionOverlay inspectorSelectionOverlay;
 
 	@Inject
+	private Injector injector;
+
+	@Inject
 	private DeveloperConfig config;
 
 	@Inject
 	private DeveloperTools developerTools;
 
+	@Inject
+	private InspectorPanel inspectorPanel;
+
+	@Inject
+	private SceneGeometry sceneGeometry;
+
 	private boolean frameTimingsOverlayEnabled;
-	private NavigationButton inspectorNavigationButton;
-	private volatile InspectorPanel inspectorPanel;
+	private DrawCallbacksRedirector drawCallbacksRedirector;
 
 	@Provides
 	DeveloperConfig provideConfig(ConfigManager configManager) {
@@ -89,6 +95,7 @@ public class DeveloperPlugin extends Plugin implements KeyListener {
 	@Override
 	protected void startUp() {
 		clientThread.invoke(() -> {
+			installDrawCallbacksRedirector();
 			inspectorSelectionOverlay.startUp();
 			keyManager.registerKeyListener(this);
 			developerTools.setDeveloperPluginActive(true);
@@ -100,39 +107,39 @@ public class DeveloperPlugin extends Plugin implements KeyListener {
 			profilerOverlay.setActive(frameTimingsOverlayEnabled);
 			if (frameTimingsOverlayEnabled)
 				profilerUI.applyGraphOverlayState();
+
+			inspectorPanel.addInspectorPanel();
 		});
-		SwingUtilities.invokeLater(this::addInspectorPanel);
 	}
 
 	@Override
 	protected void shutDown() {
 		clientThread.invoke(() -> {
+			removeDrawCallbacksRedirector();
 			inspectorSelectionOverlay.shutDown();
 			keyManager.unregisterKeyListener(this);
 			developerTools.setDeveloperPluginActive(false);
 			profilerOverlay.setActive(false);
 			profilerUI.setGraphOverlayActive(false);
+
+			inspectorPanel.removeInspectorPanel();
 		});
-		SwingUtilities.invokeLater(this::removeInspectorPanel);
 	}
 
-	private void addInspectorPanel() {
-		if (inspectorNavigationButton != null) return;
-		inspectorPanel = new InspectorPanel(configManager, modelOverrideManager, gamevalManager, plugin, client, inspectorSelectionOverlay);
-		inspectorNavigationButton = NavigationButton.builder()
-			.tooltip("117 HD Inspector")
-			.icon(ImageUtil.loadImageResource(HdPlugin.class, "logo.png"))
-			.priority(5)
-			.panel(inspectorPanel)
-			.build();
-		clientToolbar.addNavigation(inspectorNavigationButton);
+	private void installDrawCallbacksRedirector() {
+		DrawCallbacks previous = client.getDrawCallbacks();
+		if (previous == null) return;
+		drawCallbacksRedirector = new DrawCallbacksRedirector(previous, sceneGeometry);
+		client.setDrawCallbacks(drawCallbacksRedirector);
 	}
 
-	private void removeInspectorPanel() {
-		if (inspectorPanel != null) inspectorPanel.setSelectionMode(false);
-		if (inspectorNavigationButton != null) clientToolbar.removeNavigation(inspectorNavigationButton);
-		inspectorPanel = null;
-		inspectorNavigationButton = null;
+	private void removeDrawCallbacksRedirector() {
+		DrawCallbacksRedirector redirector = drawCallbacksRedirector;
+		if (redirector == null) return;
+		if (client.getDrawCallbacks() == redirector)
+			client.setDrawCallbacks(redirector.getPrevious());
+		drawCallbacksRedirector = null;
+		sceneGeometry.clearRoofRemovalSettings();
 	}
 
 	@Subscribe
