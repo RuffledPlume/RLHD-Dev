@@ -112,7 +112,11 @@ public interface DeveloperConfig extends Config {
 	)
 	default Keybind reloadScene() { return new Keybind(java.awt.event.KeyEvent.VK_R, CTRL_DOWN_MASK); }
 
-	/*====== Profiler UI state ======*/
+	/*====== Inspector and profiler UI state ======*/
+
+	String KEY_INSPECTOR_PANEL_WIDTH = "inspectorPanelWidth";
+	@ConfigItem(keyName = KEY_INSPECTOR_PANEL_WIDTH, hidden = true, name = "", description = "")
+	default int inspectorPanelWidth() { return 620; }
 
 	String KEY_FRAME_TIMER_OVERLAY_ENABLED = "frameTimerOverlayEnabled";
 	@ConfigItem(keyName = KEY_FRAME_TIMER_OVERLAY_ENABLED, hidden = true, name = "", description = "")

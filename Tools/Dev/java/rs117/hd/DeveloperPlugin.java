@@ -4,8 +4,10 @@ import com.google.inject.Provides;
 import java.awt.event.KeyEvent;
 import javax.inject.Inject;
 import javax.inject.Singleton;
+import javax.swing.SwingUtilities;
 import lombok.extern.slf4j.Slf4j;
 import net.runelite.api.events.*;
+import net.runelite.api.Client;
 import net.runelite.client.callback.ClientThread;
 import net.runelite.client.config.ConfigManager;
 import net.runelite.client.eventbus.Subscribe;
@@ -15,16 +17,23 @@ import net.runelite.client.input.KeyManager;
 import net.runelite.client.plugins.Plugin;
 import net.runelite.client.plugins.PluginDependency;
 import net.runelite.client.plugins.PluginDescriptor;
+import net.runelite.client.ui.ClientToolbar;
+import net.runelite.client.ui.NavigationButton;
+import net.runelite.client.util.ImageUtil;
+import rs117.hd.overlays.InspectorPanel;
+import rs117.hd.overlays.InspectorSelectionOverlay;
 import rs117.hd.overlays.ProfilerOverlay;
 import rs117.hd.overlays.ProfilerUI;
+import rs117.hd.scene.GamevalManager;
+import rs117.hd.scene.ModelOverrideManager;
 import rs117.hd.utils.DeveloperTools;
 
 @Slf4j
 @Singleton
 @PluginDescriptor(
 	name = "117 HD Developer",
-	description = "Development and profiling tools for 117 HD",
-	tags = {"117", "hd", "developer", "development", "profiler"}
+	description = "Inspector, development and profiling tools for 117 HD",
+	tags = {"117", "hd", "developer", "development", "inspector", "profiler"}
 )
 @PluginDependency(HdPlugin.class)
 public class DeveloperPlugin extends Plugin implements KeyListener {
@@ -36,6 +45,15 @@ public class DeveloperPlugin extends Plugin implements KeyListener {
 	private KeyManager keyManager;
 
 	@Inject
+	private ConfigManager configManager;
+
+	@Inject
+	private ClientToolbar clientToolbar;
+
+	@Inject
+	private Client client;
+
+	@Inject
 	private ProfilerOverlay profilerOverlay;
 
 	@Inject
@@ -45,12 +63,23 @@ public class DeveloperPlugin extends Plugin implements KeyListener {
 	private ProfilerUI profilerUI;
 
 	@Inject
+	private GamevalManager gamevalManager;
+
+	@Inject
+	private ModelOverrideManager modelOverrideManager;
+
+	@Inject
+	private InspectorSelectionOverlay inspectorSelectionOverlay;
+
+	@Inject
 	private DeveloperConfig config;
 
 	@Inject
 	private DeveloperTools developerTools;
 
 	private boolean frameTimingsOverlayEnabled;
+	private NavigationButton inspectorNavigationButton;
+	private volatile InspectorPanel inspectorPanel;
 
 	@Provides
 	DeveloperConfig provideConfig(ConfigManager configManager) {
@@ -60,6 +89,7 @@ public class DeveloperPlugin extends Plugin implements KeyListener {
 	@Override
 	protected void startUp() {
 		clientThread.invoke(() -> {
+			inspectorSelectionOverlay.startUp();
 			keyManager.registerKeyListener(this);
 			developerTools.setDeveloperPluginActive(true);
 
@@ -71,16 +101,47 @@ public class DeveloperPlugin extends Plugin implements KeyListener {
 			if (frameTimingsOverlayEnabled)
 				profilerUI.applyGraphOverlayState();
 		});
+		SwingUtilities.invokeLater(this::addInspectorPanel);
 	}
 
 	@Override
 	protected void shutDown() {
 		clientThread.invoke(() -> {
+			inspectorSelectionOverlay.shutDown();
 			keyManager.unregisterKeyListener(this);
 			developerTools.setDeveloperPluginActive(false);
 			profilerOverlay.setActive(false);
 			profilerUI.setGraphOverlayActive(false);
 		});
+		SwingUtilities.invokeLater(this::removeInspectorPanel);
+	}
+
+	private void addInspectorPanel() {
+		if (inspectorNavigationButton != null) return;
+		inspectorPanel = new InspectorPanel(configManager, modelOverrideManager, gamevalManager, plugin, client, inspectorSelectionOverlay);
+		inspectorNavigationButton = NavigationButton.builder()
+			.tooltip("117 HD Inspector")
+			.icon(ImageUtil.loadImageResource(HdPlugin.class, "logo.png"))
+			.priority(5)
+			.panel(inspectorPanel)
+			.build();
+		clientToolbar.addNavigation(inspectorNavigationButton);
+	}
+
+	private void removeInspectorPanel() {
+		if (inspectorPanel != null) inspectorPanel.setSelectionMode(false);
+		if (inspectorNavigationButton != null) clientToolbar.removeNavigation(inspectorNavigationButton);
+		inspectorPanel = null;
+		inspectorNavigationButton = null;
+	}
+
+	@Subscribe
+	public void onMenuOptionClicked(MenuOptionClicked event) {
+		InspectorPanel panel = inspectorPanel;
+		if (panel == null || !panel.isSelectionMode()) return;
+		event.consume();
+		panel.selectAtCursor();
+		SwingUtilities.invokeLater(() -> panel.setSelectionMode(false));
 	}
 
 	@Subscribe
