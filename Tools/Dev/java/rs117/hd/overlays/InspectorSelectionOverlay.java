@@ -6,8 +6,6 @@ import java.awt.Dimension;
 import java.awt.Graphics2D;
 import java.awt.Shape;
 import java.awt.geom.Point2D;
-import java.util.ArrayList;
-import java.util.Comparator;
 import javax.inject.Inject;
 import javax.inject.Singleton;
 import net.runelite.api.*;
@@ -129,38 +127,53 @@ public final class InspectorSelectionOverlay extends Overlay {
 		if (!modelPickingEnabled) { hoveredObject = null; return; }
 		Scene scene = client.getTopLevelWorldView().getScene();
 		if (scene == null) { hoveredObject = null; return; }
-		ArrayList<Object> hits = new ArrayList<>();
+		HoverCandidate best = new HoverCandidate(client.getCameraX(), client.getCameraY(), client.getCameraZ());
 		Tile[][][] tiles = scene.getTiles();
 		for (int plane = tiles.length - 1; plane >= 0; plane--)
 			for (Tile[] column : tiles[plane])
 				for (Tile tile : column)
-					if (tile != null) processTile(cursor, tile, hits);
-		for (NPC npc : client.getTopLevelWorldView().npcs()) addIfHovered(cursor, npc, hits);
-		for (Player player : client.getPlayers()) addIfHovered(cursor, player, hits);
-		for (GraphicsObject object : client.getGraphicsObjects()) addIfHovered(cursor, object, hits);
-		for (Projectile projectile : client.getProjectiles()) addIfHovered(cursor, projectile, hits);
-		int camX = client.getCameraX(), camY = client.getCameraY(), camZ = client.getCameraZ();
-		hits.sort(Comparator.comparingLong(object -> distanceSquared(object, camX, camY, camZ)));
-		hoveredObject = hits.isEmpty() ? null : hits.get(0);
+					if (tile != null) processTile(cursor, tile, best);
+		for (NPC npc : client.getTopLevelWorldView().npcs()) considerIfHovered(cursor, npc, best);
+		for (Player player : client.getPlayers()) considerIfHovered(cursor, player, best);
+		for (GraphicsObject object : client.getGraphicsObjects()) considerIfHovered(cursor, object, best);
+		for (Projectile projectile : client.getProjectiles()) considerIfHovered(cursor, projectile, best);
+		hoveredObject = best.object;
 	}
 
-	private void processTile(Point2D cursor, Tile tile, ArrayList<Object> hits) {
-		if (tile.getBridge() != null) processTile(cursor, tile.getBridge(), hits);
-		if (getCanvasTilePoly(client, tile.getLocalLocation()) == null) return;
+	private void processTile(Point2D cursor, Tile tile, HoverCandidate best) {
+		if (tile.getBridge() != null) processTile(cursor, tile.getBridge(), best);
 		GameObject[] gameObjects = tile.getGameObjects();
-		if (gameObjects != null) for (GameObject object : gameObjects) if (object != null) addIfHovered(cursor, object, hits);
-		if (tile.getWallObject() != null) addIfHovered(cursor, tile.getWallObject(), hits);
-		if (tile.getDecorativeObject() != null) addIfHovered(cursor, tile.getDecorativeObject(), hits);
-		if (tile.getGroundObject() != null) addIfHovered(cursor, tile.getGroundObject(), hits);
+		if (gameObjects != null) for (GameObject object : gameObjects) if (object != null) considerIfHovered(cursor, object, best);
+		if (tile.getWallObject() != null) considerIfHovered(cursor, tile.getWallObject(), best);
+		if (tile.getDecorativeObject() != null) considerIfHovered(cursor, tile.getDecorativeObject(), best);
+		if (tile.getGroundObject() != null) considerIfHovered(cursor, tile.getGroundObject(), best);
 	}
 
-	private void addIfHovered(Point2D cursor, Object object, ArrayList<Object> hits) {
+	private void considerIfHovered(Point2D cursor, Object object, HoverCandidate best) {
 		Shape shape = null;
 		if (object instanceof Actor) shape = ((Actor) object).getConvexHull();
 		else if (object instanceof TileObject) shape = ((TileObject) object).getClickbox();
 		else if (object instanceof GraphicsObject) shape = convexHull((GraphicsObject) object);
 		else if (object instanceof Projectile) shape = convexHull((Projectile) object);
-		if (shape != null && shape.contains(cursor)) hits.add(object);
+		if (shape != null && shape.contains(cursor)) {
+			long distance = distanceSquared(object, best.cameraX, best.cameraY, best.cameraZ);
+			if (distance < best.distance) {
+				best.object = object;
+				best.distance = distance;
+			}
+		}
+	}
+
+	private static final class HoverCandidate {
+		final int cameraX, cameraY, cameraZ;
+		Object object;
+		long distance = Long.MAX_VALUE;
+
+		HoverCandidate(int cameraX, int cameraY, int cameraZ) {
+			this.cameraX = cameraX;
+			this.cameraY = cameraY;
+			this.cameraZ = cameraZ;
+		}
 	}
 
 	private Shape convexHull(GraphicsObject object) {
