@@ -14,7 +14,7 @@ import lombok.RequiredArgsConstructor;
 import lombok.Setter;
 import lombok.extern.slf4j.Slf4j;
 import net.runelite.client.config.ConfigManager;
-import rs117.hd.HdPluginConfig;
+import rs117.hd.DeveloperConfig;
 import rs117.hd.overlays.components.GraphComponent;
 
 @Slf4j
@@ -54,7 +54,7 @@ public class ProfilerUI {
 	private ConfigManager configManager;
 
 	@Inject
-	private HdPluginConfig config;
+	private DeveloperConfig config;
 
 	@Inject
 	private ProfilerGraphOverlay profilerGraphOverlay;
@@ -107,8 +107,8 @@ public class ProfilerUI {
 
 	public boolean loadOverlayEnabled() {
 		String value = configManager.getConfiguration(
-			HdPluginConfig.CONFIG_GROUP,
-			HdPluginConfig.KEY_FRAME_TIMER_OVERLAY_ENABLED
+			DeveloperConfig.CONFIG_GROUP,
+			DeveloperConfig.KEY_FRAME_TIMER_OVERLAY_ENABLED
 		);
 		if (value == null)
 			return config.frameTimerOverlayEnabled();
@@ -117,8 +117,8 @@ public class ProfilerUI {
 
 	public void saveOverlayEnabled(boolean enabled) {
 		configManager.setConfiguration(
-			HdPluginConfig.CONFIG_GROUP,
-			HdPluginConfig.KEY_FRAME_TIMER_OVERLAY_ENABLED,
+			DeveloperConfig.CONFIG_GROUP,
+			DeveloperConfig.KEY_FRAME_TIMER_OVERLAY_ENABLED,
 			String.valueOf(enabled)
 		);
 	}
@@ -128,16 +128,16 @@ public class ProfilerUI {
 		try {
 			selectedTab = parseTab(
 				configManager.getConfiguration(
-					HdPluginConfig.CONFIG_GROUP,
-					HdPluginConfig.KEY_FRAME_TIMER_SELECTED_TAB
+					DeveloperConfig.CONFIG_GROUP,
+					DeveloperConfig.KEY_FRAME_TIMER_SELECTED_TAB
 				),
 				config.frameTimerSelectedTab()
 			);
 
 			loadTabSet(
 				configManager.getConfiguration(
-					HdPluginConfig.CONFIG_GROUP,
-					HdPluginConfig.KEY_FRAME_TIMER_HIDDEN_TABS
+					DeveloperConfig.CONFIG_GROUP,
+					DeveloperConfig.KEY_FRAME_TIMER_HIDDEN_TABS
 				),
 				config.frameTimerHiddenTabs(),
 				hiddenTabs
@@ -145,8 +145,8 @@ public class ProfilerUI {
 
 			loadTabSet(
 				configManager.getConfiguration(
-					HdPluginConfig.CONFIG_GROUP,
-					HdPluginConfig.KEY_FRAME_TIMER_DETACHED_TABS
+					DeveloperConfig.CONFIG_GROUP,
+					DeveloperConfig.KEY_FRAME_TIMER_DETACHED_TABS
 				),
 				config.frameTimerDetachedTabs(),
 				detachedTabs
@@ -154,16 +154,16 @@ public class ProfilerUI {
 
 			graphEnabledPreference = parseBoolean(
 				configManager.getConfiguration(
-					HdPluginConfig.CONFIG_GROUP,
-					HdPluginConfig.KEY_FRAME_TIMER_GRAPH_ENABLED
+					DeveloperConfig.CONFIG_GROUP,
+					DeveloperConfig.KEY_FRAME_TIMER_GRAPH_ENABLED
 				),
 				config.frameTimerGraphEnabled()
 			);
 
 			loadGraphSet(
 				configManager.getConfiguration(
-					HdPluginConfig.CONFIG_GROUP,
-					HdPluginConfig.KEY_FRAME_TIMER_HIDDEN_GRAPHS
+					DeveloperConfig.CONFIG_GROUP,
+					DeveloperConfig.KEY_FRAME_TIMER_HIDDEN_GRAPHS
 				),
 				config.frameTimerHiddenGraphs(),
 				hiddenGraphs
@@ -171,40 +171,40 @@ public class ProfilerUI {
 
 			settingsDetached = parseBoolean(
 				configManager.getConfiguration(
-					HdPluginConfig.CONFIG_GROUP,
-					HdPluginConfig.KEY_FRAME_TIMER_SETTINGS_DETACHED
+					DeveloperConfig.CONFIG_GROUP,
+					DeveloperConfig.KEY_FRAME_TIMER_SETTINGS_DETACHED
 				),
 				config.frameTimerSettingsDetached()
 			);
 
 			graphDetached = parseBoolean(
 				configManager.getConfiguration(
-					HdPluginConfig.CONFIG_GROUP,
-					HdPluginConfig.KEY_FRAME_TIMER_GRAPH_DETACHED
+					DeveloperConfig.CONFIG_GROUP,
+					DeveloperConfig.KEY_FRAME_TIMER_GRAPH_DETACHED
 				),
 				config.frameTimerGraphDetached()
 			);
 
 			setGraphPlotWidthInternal(parseInt(
 				configManager.getConfiguration(
-					HdPluginConfig.CONFIG_GROUP,
-					HdPluginConfig.KEY_FRAME_TIMER_GRAPH_WIDTH
+					DeveloperConfig.CONFIG_GROUP,
+					DeveloperConfig.KEY_FRAME_TIMER_GRAPH_WIDTH
 				),
 				config.frameTimerGraphWidth()
 			));
 
 			setGraphPlotHeightInternal(parseInt(
 				configManager.getConfiguration(
-					HdPluginConfig.CONFIG_GROUP,
-					HdPluginConfig.KEY_FRAME_TIMER_GRAPH_HEIGHT
+					DeveloperConfig.CONFIG_GROUP,
+					DeveloperConfig.KEY_FRAME_TIMER_GRAPH_HEIGHT
 				),
 				config.frameTimerGraphHeight()
 			));
 
 			setMemoryGraphPlotHeightInternal(parseInt(
 				configManager.getConfiguration(
-					HdPluginConfig.CONFIG_GROUP,
-					HdPluginConfig.KEY_FRAME_TIMER_MEMORY_GRAPH_HEIGHT
+					DeveloperConfig.CONFIG_GROUP,
+					DeveloperConfig.KEY_FRAME_TIMER_MEMORY_GRAPH_HEIGHT
 				),
 				config.frameTimerMemoryGraphHeight()
 			));
@@ -405,62 +405,62 @@ public class ProfilerUI {
 			return;
 
 		configManager.setConfiguration(
-			HdPluginConfig.CONFIG_GROUP,
-			HdPluginConfig.KEY_FRAME_TIMER_SELECTED_TAB,
+			DeveloperConfig.CONFIG_GROUP,
+			DeveloperConfig.KEY_FRAME_TIMER_SELECTED_TAB,
 			selectedTab.name()
 		);
 
 		configManager.setConfiguration(
-			HdPluginConfig.CONFIG_GROUP,
-			HdPluginConfig.KEY_FRAME_TIMER_HIDDEN_TABS,
+			DeveloperConfig.CONFIG_GROUP,
+			DeveloperConfig.KEY_FRAME_TIMER_HIDDEN_TABS,
 			saveTabSet(hiddenTabs)
 		);
 
 		configManager.setConfiguration(
-			HdPluginConfig.CONFIG_GROUP,
-			HdPluginConfig.KEY_FRAME_TIMER_DETACHED_TABS,
+			DeveloperConfig.CONFIG_GROUP,
+			DeveloperConfig.KEY_FRAME_TIMER_DETACHED_TABS,
 			saveTabSet(detachedTabs)
 		);
 
 		configManager.setConfiguration(
-			HdPluginConfig.CONFIG_GROUP,
-			HdPluginConfig.KEY_FRAME_TIMER_SETTINGS_DETACHED,
+			DeveloperConfig.CONFIG_GROUP,
+			DeveloperConfig.KEY_FRAME_TIMER_SETTINGS_DETACHED,
 			String.valueOf(settingsDetached)
 		);
 
 		configManager.setConfiguration(
-			HdPluginConfig.CONFIG_GROUP,
-			HdPluginConfig.KEY_FRAME_TIMER_GRAPH_DETACHED,
+			DeveloperConfig.CONFIG_GROUP,
+			DeveloperConfig.KEY_FRAME_TIMER_GRAPH_DETACHED,
 			String.valueOf(graphDetached)
 		);
 
 		configManager.setConfiguration(
-			HdPluginConfig.CONFIG_GROUP,
-			HdPluginConfig.KEY_FRAME_TIMER_GRAPH_ENABLED,
+			DeveloperConfig.CONFIG_GROUP,
+			DeveloperConfig.KEY_FRAME_TIMER_GRAPH_ENABLED,
 			String.valueOf(graphEnabledPreference)
 		);
 
 		configManager.setConfiguration(
-			HdPluginConfig.CONFIG_GROUP,
-			HdPluginConfig.KEY_FRAME_TIMER_HIDDEN_GRAPHS,
+			DeveloperConfig.CONFIG_GROUP,
+			DeveloperConfig.KEY_FRAME_TIMER_HIDDEN_GRAPHS,
 			saveGraphSet(hiddenGraphs)
 		);
 
 		configManager.setConfiguration(
-			HdPluginConfig.CONFIG_GROUP,
-			HdPluginConfig.KEY_FRAME_TIMER_GRAPH_WIDTH,
+			DeveloperConfig.CONFIG_GROUP,
+			DeveloperConfig.KEY_FRAME_TIMER_GRAPH_WIDTH,
 			String.valueOf(graphPlotWidth)
 		);
 
 		configManager.setConfiguration(
-			HdPluginConfig.CONFIG_GROUP,
-			HdPluginConfig.KEY_FRAME_TIMER_GRAPH_HEIGHT,
+			DeveloperConfig.CONFIG_GROUP,
+			DeveloperConfig.KEY_FRAME_TIMER_GRAPH_HEIGHT,
 			String.valueOf(graphPlotHeight)
 		);
 
 		configManager.setConfiguration(
-			HdPluginConfig.CONFIG_GROUP,
-			HdPluginConfig.KEY_FRAME_TIMER_MEMORY_GRAPH_HEIGHT,
+			DeveloperConfig.CONFIG_GROUP,
+			DeveloperConfig.KEY_FRAME_TIMER_MEMORY_GRAPH_HEIGHT,
 			String.valueOf(memoryGraphPlotHeight)
 		);
 	}
