@@ -10,6 +10,7 @@ import java.util.Set;
 import javax.inject.Inject;
 import net.runelite.api.*;
 import net.runelite.api.coords.WorldPoint;
+import rs117.hd.model.ModelExporter;
 import rs117.hd.scene.GamevalManager;
 import rs117.hd.scene.ModelOverrideManager;
 import rs117.hd.scene.model_overrides.ModelOverride;
@@ -24,6 +25,9 @@ public final class ModelInspector implements Inspector {
 	private ModelOverrideManager modelOverrideManager;
 
 	@Inject
+	private ModelExporter modelExporter;
+
+	@Inject
 	private InspectorHistory history;
 
 	@Override
@@ -33,7 +37,7 @@ public final class ModelInspector implements Inspector {
 
 	@Override
 	public void draw(Object object, InspectorOutput out, GamevalManager.Handle gamevals) {
-		Renderable renderable = Util.getRenderable(object);
+		final Renderable renderable = Util.getRenderable(object);
 		long hash = object instanceof TileObject ? ((TileObject) object).getHash()
 			: object instanceof Node ? ((Node) object).getHash() : -1;
 		int uuid = ModelHash.generateUuid(client, hash, renderable);
@@ -46,6 +50,9 @@ public final class ModelInspector implements Inspector {
 
 		out.setTitle("Model: " + name);
 		var identity = out.section("Identity");
+		identity.action("Export", () -> modelExporter.exportModel(renderable));
+		identity.action("Import", () -> modelExporter.exportModel(renderable));
+		identity.action("Bake", () -> modelExporter.exportModel(renderable));
 		identity.line("GameVal ID", id + " (" + ModelHash.getTypeName(type) + ")");
 		identity.line("World Position", world == null ? "unknown" : world);
 		if (renderable != null) {

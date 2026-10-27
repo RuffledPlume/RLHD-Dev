@@ -72,18 +72,50 @@ public final class InspectorPanel extends PluginPanel {
 	private static final String SELECTION_READY_STATUS = "Selection ready.";
 	private static final String EMPTY_SELECTION = "Nothing found under cursor.";
 	private static final String UNSUPPORTED_SELECTION = "Unsupported selection.";
-	private final ConfigManager configManager;
-	private final ClientToolbar clientToolbar;
-	private final ClientThread clientThread;
-	private final HdPlugin plugin;
-	private final GamevalManager gamevalManager;
-	private final InspectorHistory history;
-	private final LightManager lightManager;
-	private final ModelOverrideManager modelOverrideManager;
-	private final TileOverrideManager tileOverrideManager;
-	private final InspectorSelectionOverlay selectionOverlay;
-	private final LightGizmoOverlay lightGizmoOverlay;
-	private final List<Inspector> inspectors;
+
+	@Inject
+	private ConfigManager configManager;
+
+	@Inject
+	private ClientToolbar clientToolbar;
+
+	@Inject
+	private ClientThread clientThread;
+
+	@Inject
+	private HdPlugin plugin;
+
+	@Inject
+	private GamevalManager gamevalManager;
+
+	@Inject
+	private InspectorHistory history;
+
+	@Inject
+	private LightManager lightManager;
+
+	@Inject
+	private ModelOverrideManager modelOverrideManager;
+
+	@Inject
+	private TileOverrideManager tileOverrideManager;
+
+	@Inject
+	private InspectorSelectionOverlay selectionOverlay;
+
+	@Inject
+	private LightGizmoOverlay lightGizmoOverlay;
+
+	@Inject
+	private ModelInspector modelInspector;
+
+	@Inject
+	private TileInspector tileInspector;
+
+	@Inject
+	private LightInspector lightInspector;
+
+	private final List<Inspector> inspectors = new ArrayList<>();
 	private final JButton selectionButton = new JButton("Select");
 	private final JCheckBox modelMode = new JCheckBox("Model", true);
 	private final JCheckBox tileMode = new JCheckBox("Tile", true);
@@ -98,36 +130,20 @@ public final class InspectorPanel extends PluginPanel {
 	private final Map<Object, Set<String>> addedFields = new IdentityHashMap<>();
 	private final Map<Object, Boolean> collapsedSections = new IdentityHashMap<>();
 	private final Timer candidateRefreshTimer = new Timer(100, e -> refreshCandidates());
+
 	private volatile boolean selectionMode;
 	private volatile boolean modelModeEnabled = true;
 	private volatile boolean tileModeEnabled = true;
 	private volatile boolean lightModeEnabled;
 	private volatile GamevalManager.Handle gamevalHandle;
+
 	private NavigationButton navigationButton;
 	private boolean updatingCandidates;
 	private Object selection;
 	private int panelWidth, dragStartX, dragStartWidth;
 
-	@Inject
-	public InspectorPanel(ConfigManager configManager, ClientToolbar clientToolbar, ClientThread clientThread,
-		HdPlugin plugin, GamevalManager gamevalManager,
-		InspectorSelectionOverlay selectionOverlay, LightGizmoOverlay lightGizmoOverlay,
-		ModelInspector modelInspector, TileInspector tileInspector, LightInspector lightInspector, InspectorHistory history,
-		LightManager lightManager, ModelOverrideManager modelOverrideManager, TileOverrideManager tileOverrideManager) {
+	public InspectorPanel() {
 		super(false);
-		this.configManager = configManager;
-		this.clientToolbar = clientToolbar;
-		this.clientThread = clientThread;
-		this.plugin = plugin;
-		this.gamevalManager = gamevalManager;
-		this.history = history;
-		this.lightManager = lightManager;
-		this.selectionOverlay = selectionOverlay;
-		this.lightGizmoOverlay = lightGizmoOverlay;
-		this.modelOverrideManager = modelOverrideManager;
-		this.tileOverrideManager = tileOverrideManager;
-		inspectors = List.of(modelInspector, tileInspector, lightInspector);
-		panelWidth = loadPanelWidth();
 		setLayout(new BorderLayout());
 		setBackground(ColorScheme.DARK_GRAY_COLOR);
 
@@ -139,7 +155,6 @@ public final class InspectorPanel extends PluginPanel {
 		modelMode.addActionListener(e -> updateSelectionModes());
 		tileMode.addActionListener(e -> updateSelectionModes());
 		lightMode.addActionListener(e -> updateSelectionModes());
-		selectionOverlay.setSelectionModes(modelModeEnabled, tileModeEnabled);
 		saveButton.setEnabled(false);
 		saveButton.setToolTipText("Save override or light definition edits to their JSON file");
 		saveButton.addActionListener(e -> saveChanges());
@@ -150,7 +165,6 @@ public final class InspectorPanel extends PluginPanel {
 		redoButton.setToolTipText("Redo the last undone inspector edit (Ctrl+Y)");
 		undoButton.addActionListener(e -> undo());
 		redoButton.addActionListener(e -> redo());
-		history.setChangeListener(this::updateHistoryButtons);
 		installHistoryShortcuts();
 		updateHistoryButtons();
 		candidates.setToolTipText("Objects under the cursor, nearest first");
@@ -183,6 +197,10 @@ public final class InspectorPanel extends PluginPanel {
 
 	public void startup() {
 		if (navigationButton != null) return;
+		panelWidth = loadPanelWidth();
+		inspectors.addAll(List.of(modelInspector, tileInspector, lightInspector));
+		history.setChangeListener(this::updateHistoryButtons);
+		selectionOverlay.setSelectionModes(modelModeEnabled, tileModeEnabled);
 		navigationButton = NavigationButton.builder()
 			.tooltip("117 HD Inspector")
 			.icon(ImageUtil.loadImageResource(HdPlugin.class, "logo.png"))
@@ -194,6 +212,7 @@ public final class InspectorPanel extends PluginPanel {
 
 	public void shutdown() {
 		onDeactivate();
+		history.setChangeListener(null);
 		clientThread.invoke(() -> lightGizmoOverlay.setActive(false));
 		if (navigationButton != null) clientToolbar.removeNavigation(navigationButton);
 		navigationButton = null;

@@ -7,6 +7,7 @@ import javax.inject.Singleton;
 import javax.swing.*;
 
 import lombok.extern.slf4j.Slf4j;
+import net.runelite.api.Client;
 import net.runelite.api.events.MenuOptionClicked;
 import net.runelite.client.callback.ClientThread;
 import net.runelite.client.config.ConfigManager;
@@ -17,6 +18,7 @@ import net.runelite.client.plugins.PluginManager;
 import rs117.hd.model.ModelExporter;
 import rs117.hd.model.ModelImporter;
 import rs117.hd.overlays.InspectorPanel;
+import rs117.hd.overlays.InspectorSelectionOverlay;
 import rs117.hd.utils.DevInject;
 import rs117.hd.utils.DrawCallbacksRedirector;
 import rs117.hd.utils.Props;
@@ -43,6 +45,9 @@ public class DeveloperPlugin extends Plugin {
 	@Inject
 	private PluginManager pluginManager;
 
+	@Inject
+	private Client client;
+
 	@DevInject
 	private HdPlugin plugin;
 
@@ -54,7 +59,10 @@ public class DeveloperPlugin extends Plugin {
 	
 	@DevInject
 	private DrawCallbacksRedirector drawCallbacksRedirector;
-	
+
+	@DevInject
+	private InspectorSelectionOverlay inspectorSelectionOverlay;
+
 	@DevInject
 	private InspectorPanel inspectorPanel;
 
@@ -80,7 +88,7 @@ public class DeveloperPlugin extends Plugin {
 			modelImporter.startup();
 			modelExporter.startup();
 
-			drawCallbacksRedirector.startup();
+			inspectorSelectionOverlay.startUp();
 			inspectorPanel.startup();
 
 			return true;
@@ -90,7 +98,7 @@ public class DeveloperPlugin extends Plugin {
 	@Override
 	protected void shutDown() {
 		clientThread.invoke(() -> {
-			drawCallbacksRedirector.shutdown();
+			inspectorSelectionOverlay.shutDown();
 			inspectorPanel.shutdown();
 
 			modelImporter.shutdown();
@@ -131,11 +139,10 @@ public class DeveloperPlugin extends Plugin {
 
 	@Subscribe
 	public void onMenuOptionClicked(MenuOptionClicked event) {
-		/*
 		InspectorPanel panel = inspectorPanel;
 		if (panel == null || !panel.isSelectionMode()) return;
 		event.consume();
 		panel.selectAtCursor();
-		SwingUtilities.invokeLater(() -> panel.setSelectionMode(false));*/
+		SwingUtilities.invokeLater(() -> panel.setSelectionMode(false));
 	}
 }
