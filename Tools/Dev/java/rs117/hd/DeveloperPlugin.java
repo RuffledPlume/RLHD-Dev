@@ -68,6 +68,9 @@ public class DeveloperPlugin extends Plugin {
 				return false;
 			}
 
+			modelImporter.startup();
+			modelExporter.startup();
+
 			return true;
 		});
 	}
@@ -75,8 +78,8 @@ public class DeveloperPlugin extends Plugin {
 	@Override
 	protected void shutDown() {
 		clientThread.invoke(() -> {
-			modelImporter.close();
-			modelExporter.close();
+			modelImporter.shutdown();
+			modelExporter.shutdown();
 		});
 	}
 

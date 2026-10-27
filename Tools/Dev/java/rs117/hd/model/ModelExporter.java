@@ -69,6 +69,7 @@ import org.lwjgl.assimp.AITexture;
 import org.lwjgl.assimp.AIVector3D;
 import org.lwjgl.system.MemoryStack;
 import org.lwjgl.system.Pointer;
+import rs117.hd.DeveloperPlugin;
 import rs117.hd.HdPlugin;
 import rs117.hd.renderer.legacy.LegacyModelPusher;
 import rs117.hd.renderer.legacy.LegacySceneContext;
@@ -124,7 +125,7 @@ import static rs117.hd.DeveloperPlugin.MODEL_EXPORTS;
 import static rs117.hd.utils.ResourcePath.path;
 
 @Slf4j
-public class ModelExporter extends Overlay implements MouseListener, MouseWheelListener, KeyListener, AutoCloseable {
+public class ModelExporter extends Overlay implements MouseListener, MouseWheelListener, KeyListener {
 	private static final boolean EMBED_TEXTURES = false;
 	private static final Color OUTLINE_COLOR = new Color(0xFFFF00FF, true);
 	private static final int OUTLINE_WIDTH = 4;
@@ -187,13 +188,7 @@ public class ModelExporter extends Overlay implements MouseListener, MouseWheelL
 	private final Map<ActorSpotAnim, Actor> spotAnimActors = new IdentityHashMap<>();
 	private final Set<Object> hoverChecked = Collections.newSetFromMap(new IdentityHashMap<>());
 
-	@Inject
-	public ModelExporter(
-		EventBus eventBus,
-		OverlayManager overlayManager,
-		MouseManager mouseManager,
-		KeyManager keyManager
-	) {
+	public void startup() {
 		setPosition(OverlayPosition.DYNAMIC);
 		setLayer(OverlayLayer.ABOVE_SCENE);
 		setPriority(OverlayPriority.HIGH);
@@ -205,8 +200,7 @@ public class ModelExporter extends Overlay implements MouseListener, MouseWheelL
 		SwingUtilities.invokeLater(() -> overlayManager.add(this));
 	}
 
-	@Override
-	public void close() {
+	public void shutdown() {
 		selectedObject = null;
 		hoverSet.clear();
 		hoverChecked.clear();
