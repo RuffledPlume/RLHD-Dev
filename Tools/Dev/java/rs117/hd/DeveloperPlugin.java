@@ -87,30 +87,28 @@ public class DeveloperPlugin extends Plugin {
 		if (plugin != null)
 			return true;
 
-		var optional = pluginManager.getPlugins().stream()
+		final var optional = pluginManager.getPlugins().stream()
 				.filter(p -> p instanceof HdPlugin)
 				.findFirst();
+
 		if (optional.isEmpty())
 			return false;
 
-		HdPlugin hdPlugin = (HdPlugin) optional.get();
-		injector = hdPlugin.getInjector().createChildInjector(binder -> {
+		injector = optional.get().getInjector().createChildInjector(binder -> {
 			binder.bind(DeveloperPlugin.class).toInstance(this);
 			binder.install(this);
 		});
 
-		try {
-			for (Class<?> c = getClass(); c != null && c != Object.class; c = c.getSuperclass()) {
-				for (Field field : c.getDeclaredFields()) {
-					if (!field.isAnnotationPresent(DevInject.class))
-						continue;
-					field.setAccessible(true);
-					field.set(this, injector.getInstance(field.getType()));
-				}
+		for (Field field : getClass().getDeclaredFields()) {
+			try {
+				if (!field.isAnnotationPresent(DevInject.class))
+					continue;
+				field.setAccessible(true);
+				field.set(this, injector.getInstance(field.getType()));
+			} catch (Exception e) {
+				log.error("Failed to devInject field: {}", field.getName(), e);
+				return false;
 			}
-		} catch (Exception e) {
-			log.error("Failed to inject dev fields", e);
-			return false;
 		}
 
 		return true;
