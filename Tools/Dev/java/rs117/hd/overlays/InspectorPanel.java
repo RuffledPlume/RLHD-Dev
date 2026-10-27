@@ -322,20 +322,22 @@ public final class InspectorPanel extends PluginPanel {
 	}
 
 	public void setSelectionMode(boolean enabled) {
-		if (enabled && !hasEnabledMode()) {
-			status.setText("Enable a mode to inspect selections.");
-			return;
-		}
-		selectionMode = enabled;
-		selectionOverlay.setSelectionMode(enabled);
-		if (enabled) {
-			candidateRefreshTimer.start();
-		} else {
-			candidateRefreshTimer.stop();
-			refreshCandidates();
-		}
-		selectionButton.setText(enabled ? "Cancel" : "Select");
-		status.setText(enabled ? SELECTING_STATUS : selection == null ? DEFAULT_STATUS : SELECTION_READY_STATUS);
+		clientThread.invoke(() -> {
+			if (enabled && !hasEnabledMode()) {
+				status.setText("Enable a mode to inspect selections.");
+				return;
+			}
+			selectionMode = enabled;
+			selectionOverlay.setSelectionMode(enabled);
+			if (enabled) {
+				candidateRefreshTimer.start();
+			} else {
+				candidateRefreshTimer.stop();
+				refreshCandidates();
+			}
+			selectionButton.setText(enabled ? "Cancel" : "Select");
+			status.setText(enabled ? SELECTING_STATUS : selection == null ? DEFAULT_STATUS : SELECTION_READY_STATUS);
+		});
 	}
 
 	public void selectAtCursor() {

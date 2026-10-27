@@ -19,13 +19,12 @@ public final class DrawCallbacksRedirector implements DrawCallbacks {
 
     private DrawCallbacks previous;
 
-	public void startup() {
-		// TODO: Needs to handle edge case where 117HD failed to start
+	public void install() {
 		previous = client.getDrawCallbacks();
 		client.setDrawCallbacks(this);
 	}
 
-	public void shutdown() {
+	public void uninstall() {
 		if (client.getDrawCallbacks() == this)
 			client.setDrawCallbacks(previous);
 		previous = null;

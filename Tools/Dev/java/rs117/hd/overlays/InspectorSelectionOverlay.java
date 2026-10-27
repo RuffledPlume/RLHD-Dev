@@ -24,6 +24,7 @@ import net.runelite.client.ui.overlay.OverlayManager;
 import net.runelite.client.ui.overlay.OverlayPosition;
 import net.runelite.client.ui.overlay.OverlayPriority;
 import net.runelite.client.ui.overlay.outline.ModelOutlineRenderer;
+import rs117.hd.utils.DrawCallbacksRedirector;
 import rs117.hd.utils.SceneGeometry;
 import rs117.hd.utils.SceneGeometry.Hit;
 
@@ -53,6 +54,9 @@ public final class InspectorSelectionOverlay extends Overlay {
 
 	@Inject
 	private ModelOutlineRenderer modelOutlineRenderer;
+
+	@Inject
+	private DrawCallbacksRedirector drawCallbacksRedirector;
 
 	@Inject
 	private SceneGeometry sceneGeometry;
@@ -100,6 +104,9 @@ public final class InspectorSelectionOverlay extends Overlay {
 			hoveredTile = null;
 			hoverCandidates = Collections.emptyList();
 			hoveredCandidateIndex = 0;
+			drawCallbacksRedirector.install();
+		} else {
+			drawCallbacksRedirector.uninstall();
 		}
 		setActive(enabled || selectedObject != null || selectedTile != null);
 	}
