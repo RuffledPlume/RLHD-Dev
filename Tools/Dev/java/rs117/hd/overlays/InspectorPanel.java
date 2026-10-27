@@ -179,6 +179,7 @@ public final class InspectorPanel extends PluginPanel {
 				return component;
 			}
 		});
+
 		candidates.addActionListener(e -> {
 			if (updatingCandidates || candidates.getSelectedIndex() < 0) return;
 			int index = candidates.getSelectedIndex();
@@ -540,10 +541,10 @@ public final class InspectorPanel extends PluginPanel {
 				JButton button = new JButton(action.label);
 				button.setMargin(new Insets(2, 6, 2, 6));
 				button.setEnabled(action.enabled);
-				button.addActionListener(e -> {
-					action.callback.run();
-					render();
-				});
+				button.addActionListener(e -> clientThread.invoke(() -> {
+                    action.callback.run();
+                    SwingUtilities.invokeLater(this::render);
+                }));
 				actions.add(button);
 			}
 			if (section.objectIdSearch != null) actions.add(createObjectIdSearch(section.objectIdSearch));

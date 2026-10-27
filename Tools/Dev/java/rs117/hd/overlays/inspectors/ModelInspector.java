@@ -50,9 +50,7 @@ public final class ModelInspector implements Inspector {
 
 		out.setTitle("Model: " + name);
 		var identity = out.section("Identity");
-		identity.action("Export", () -> modelExporter.exportModel(renderable));
-		identity.action("Import", () -> modelExporter.exportModel(renderable));
-		identity.action("Bake", () -> modelExporter.exportModel(renderable));
+		identity.action("Export", () -> modelExporter.exportModel(object, renderable));
 		identity.line("GameVal ID", id + " (" + ModelHash.getTypeName(type) + ")");
 		identity.line("World Position", world == null ? "unknown" : world);
 		if (renderable != null) {
@@ -69,12 +67,13 @@ public final class ModelInspector implements Inspector {
 			Set<Integer> objectIds = baseOverride.objectIds == null ? Set.of() : new HashSet<>(baseOverride.objectIds);
 			List<Integer> sortedObjectIds = new ArrayList<>(objectIds);
 			sortedObjectIds.sort(Integer::compareTo);
+			var objectIdSection = parentSection.child("Object IDs", null, sortedObjectIds.size() > 3);
 			for (int objectId : sortedObjectIds) {
 				String objectName = gamevals.getObjectName(objectId);
-				parentSection.lineAction("Object ID", objectName == null ? objectId : objectName + " (" + objectId + ")",
+				objectIdSection.lineAction("", objectName == null ? objectId : objectName + " (" + objectId + ")",
 					"X", () -> removeObjectId(baseOverride, objectId));
 			}
-			parentSection.objectIdSearch(gamevals.getObjects(), objectIds, objectId -> addObjectId(baseOverride, objectId));
+			objectIdSection.objectIdSearch(gamevals.getObjects(), objectIds, objectId -> addObjectId(baseOverride, objectId));
 			for (Field field : OverrideFields.fields(override))
 				if (field.getName().equals("areas")) parentSection.field(field);
 			for (Field field : OverrideFields.changedFields(override)) parentSection.field(field);
@@ -172,7 +171,7 @@ public final class ModelInspector implements Inspector {
 		history.execute(() -> owner.replaceColorOverrides(copy(before)), () -> owner.replaceColorOverrides(copy(after)));
 	}
 
-	private void makeUnique(int uuid, ModelOverride parent) {
+	private ModelOverride makeUnique(int uuid, ModelOverride parent) {
 		ModelOverride unique = parent.copy();
 		if (parent.colorOverrides != null) unique.colorOverrides = parent.colorOverrides.clone();
 		if (parent.areaOverrides != null) unique.areaOverrides = new LinkedHashMap<>(parent.areaOverrides);
@@ -187,6 +186,7 @@ public final class ModelInspector implements Inspector {
 				modelOverrideManager.replaceOverride(uuid, unique);
 				modelOverrideManager.addDefinition(unique);
 			});
+		return unique;
 	}
 
 	private void removeColorOverride(ModelOverride owner, ModelOverride target) {

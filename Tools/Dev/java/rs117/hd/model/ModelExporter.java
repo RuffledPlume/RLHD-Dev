@@ -269,8 +269,8 @@ public class ModelExporter extends Overlay implements MouseListener, MouseWheelL
 		}
 	}
 
-	public void exportModel(Object object) {
-		exportModels(getTypeAndName(object), resolveModels(object), false);
+	public void exportModel(Object object, Renderable renderable) {
+		exportModels(getTypeAndName(object), resolveModels(renderable), false);
 	}
 
 	public void exportModel(Map.Entry<String, String> objectName, Object object) {
