@@ -15,6 +15,9 @@ import rs117.hd.model.ModelImporter;
 import rs117.hd.utils.Props;
 import rs117.hd.utils.ResourcePath;
 
+import java.util.ArrayList;
+import java.util.List;
+
 import static rs117.hd.utils.ResourcePath.path;
 
 @Slf4j
@@ -34,8 +37,12 @@ public class DeveloperPlugin extends Plugin {
 	@Inject
 	private PluginManager pluginManager;
 
-	private ModelExporter modelExporter;
-	private ModelImporter modelImporter;
+	private static final Class<?>[] TOOLS = {
+			ModelExporter.class,
+			ModelImporter.class
+	};
+
+	private final List<DeveloperTool> tools = new ArrayList<>();
 
 	@Provides
 	DeveloperConfig provideConfig(ConfigManager configManager) {
@@ -51,11 +58,17 @@ public class DeveloperPlugin extends Plugin {
 			if (optional.isEmpty())
 				return false;
 
-			HdPlugin plugin = (HdPlugin) optional.get();
-			injector = plugin.getInjector();
+			injector = optional.get().getInjector();
 
-			modelExporter = injector.getInstance(ModelExporter.class);
-			modelImporter = injector.getInstance(ModelImporter.class);
+			for (var toolClass : TOOLS) {
+				try {
+					DeveloperTool tool = (DeveloperTool) injector.getInstance(toolClass);
+					tool.startUp();
+					tools.add(tool);
+				} catch (Throwable ex) {
+					log.error("Failed to initialize devtool {}", toolClass, ex);
+				}
+			}
 
 			return true;
 		});
@@ -64,12 +77,14 @@ public class DeveloperPlugin extends Plugin {
 	@Override
 	protected void shutDown() {
 		clientThread.invoke(() -> {
-			if (modelImporter != null)
-				modelImporter.close();
-			modelImporter = null;
-			if (modelExporter != null)
-				modelExporter.close();
-			modelExporter = null;
+			for (var tool : tools) {
+				try {
+					tool.shutdown();
+				} catch (Throwable ex) {
+					log.error("Failed to cleanly destroy devtool {}", tool.getClass(), ex);
+				}
+			}
+			tools.clear();
 		});
 	}
 }
