@@ -3,6 +3,7 @@ package rs117.hd.model;
 import com.google.gson.Gson;
 import com.google.gson.JsonDeserializer;
 import com.google.gson.JsonArray;
+import rs117.hd.DeveloperTool;
 import rs117.hd.scene.model_overrides.ModelOverride;
 import net.runelite.client.eventbus.EventBus;
 import net.runelite.client.eventbus.Subscribe;
@@ -55,17 +56,33 @@ import static rs117.hd.utils.ResourcePath.path;
 
 /** Imports editable UV0 and materials, using immutable UV1 corner IDs for custom models. */
 @Slf4j
-public class ModelImporter implements KeyListener, AutoCloseable {
+public class ModelImporter implements DeveloperTool, KeyListener {
 	private static final Keybind BAKE = new Keybind(KeyEvent.VK_ENTER, CTRL_DOWN_MASK | ALT_DOWN_MASK);
 	// Consume whole strings and comments so embedded property names cannot match.
 	private static final Pattern JSON_TOKEN = Pattern.compile(
 		"\"(?:\\\\.|[^\"\\\\])*\"|//[^\\r\\n]*|/\\*[\\s\\S]*?\\*/|[{}\\[\\],:]|true|false|null|-?\\d+(?:\\.\\d+)?(?:[eE][+-]?\\d+)?");
-	private final HdPlugin plugin;
-	private final ModelOverrideManager overrides;
-	private final KeyManager keys;
-	private final ClientThread clientThread;
+
+	@Inject
+	private HdPlugin plugin;
+
+	@Inject
+	private ModelOverrideManager overrides;
+
+	@Inject
+	private KeyManager keys;
+
+	@Inject
+	private ClientThread clientThread;
+
+	@Inject
 	private ResourcePath source;
-	private final EventBus eventBus;
+
+	@Inject
+	private EventBus eventBus;
+
+ 	@Inject
+	private ScheduledExecutorService executor;
+
 	private Gson originalGson, installedGson;
 	private FileWatcher.UnregisterCallback modelExportsWatcher;
 	private ScheduledFuture<?> debounce;
@@ -73,47 +90,38 @@ public class ModelImporter implements KeyListener, AutoCloseable {
 	private boolean pressed;
 	private boolean closed;
 
-	@Inject
-	public ModelImporter(HdPlugin plugin, ModelOverrideManager overrides, KeyManager keys, ClientThread clientThread,
-						 ScheduledExecutorService executor, EventBus eventBus) {
-		this.plugin = plugin;
-		this.eventBus = eventBus;
-		this.overrides = overrides;
-		this.keys = keys;
-		this.clientThread = clientThread;
-		if (Props.DEVELOPMENT) {
-			source = Props.getFile("rlhd.model-overrides-path", () -> path(ModelOverrideManager.class, "model_overrides.json"));
-			eventBus.register(this);
-			installAdapter();
-			keys.registerKeyListener(this);
-			try {
-				modelExportsWatcher = FileWatcher.watchPath(
-					MODEL_EXPORTS.mkdirs(),
-					changed -> {
-						synchronized (this) {
-							if (closed)
-								return;
-							if (debounce != null)
-								debounce.cancel(false);
-							long revision = ++reloadRevision;
-							debounce = executor.schedule(() -> clientThread.invoke(() -> {
-								synchronized (this) {
-									// Cancellation cannot remove a callback already queued on the client thread.
-									if (!closed && revision == reloadRevision)
-										reloadOverrides();
-								}
-							}), 100, TimeUnit.MILLISECONDS);
-						}
+	public void startUp() {
+		source = Props.getFile("rlhd.model-overrides-path", () -> path(ModelOverrideManager.class, "model_overrides.json"));
+		eventBus.register(this);
+		installAdapter();
+		keys.registerKeyListener(this);
+		try {
+			modelExportsWatcher = FileWatcher.watchPath(
+				MODEL_EXPORTS.mkdirs(),
+				changed -> {
+					synchronized (this) {
+						if (closed)
+							return;
+						if (debounce != null)
+							debounce.cancel(false);
+						long revision = ++reloadRevision;
+						debounce = executor.schedule(() -> clientThread.invoke(() -> {
+							synchronized (this) {
+								// Cancellation cannot remove a callback already queued on the client thread.
+								if (!closed && revision == reloadRevision)
+									reloadOverrides();
+							}
+						}), 100, TimeUnit.MILLISECONDS);
 					}
-				);
-			} catch (RuntimeException ex) {
-				log.warn("Unable to watch model-exports", ex);
-			}
+				}
+			);
+		} catch (RuntimeException ex) {
+			log.warn("Unable to watch model-exports", ex);
 		}
 	}
 
 	@Override
-	public synchronized void close() {
+	public synchronized void shutdown() {
 		closed = true;
 		if (debounce != null)
 			debounce.cancel(false);
