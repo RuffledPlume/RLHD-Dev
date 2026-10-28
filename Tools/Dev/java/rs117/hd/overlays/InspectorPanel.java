@@ -35,6 +35,8 @@ import javax.swing.KeyStroke;
 import javax.swing.JScrollPane;
 import javax.swing.SwingUtilities;
 import javax.swing.Timer;
+
+import lombok.Getter;
 import net.runelite.api.Tile;
 import net.runelite.client.callback.ClientThread;
 import net.runelite.client.config.ConfigManager;
@@ -50,7 +52,6 @@ import rs117.hd.overlays.inspectors.Inspector;
 import rs117.hd.overlays.inspectors.InspectorEditors;
 import rs117.hd.overlays.inspectors.InspectorHistory;
 import rs117.hd.overlays.inspectors.InspectorOutput;
-import rs117.hd.overlays.inspectors.LightInspector;
 import rs117.hd.overlays.inspectors.ModelInspector;
 import rs117.hd.overlays.inspectors.ObjectIdSearchBox;
 import rs117.hd.overlays.inspectors.OverrideFields;
@@ -92,9 +93,6 @@ public final class InspectorPanel extends PluginPanel {
 	private InspectorHistory history;
 
 	@Inject
-	private LightManager lightManager;
-
-	@Inject
 	private ModelOverrideManager modelOverrideManager;
 
 	@Inject
@@ -104,22 +102,15 @@ public final class InspectorPanel extends PluginPanel {
 	private InspectorSelectionOverlay selectionOverlay;
 
 	@Inject
-	private LightGizmoOverlay lightGizmoOverlay;
-
-	@Inject
 	private ModelInspector modelInspector;
 
 	@Inject
 	private TileInspector tileInspector;
 
-	@Inject
-	private LightInspector lightInspector;
-
 	private final List<Inspector> inspectors = new ArrayList<>();
 	private final JButton selectionButton = new JButton("Select");
 	private final JCheckBox modelMode = new JCheckBox("Model", true);
 	private final JCheckBox tileMode = new JCheckBox("Tile", true);
-	private final JCheckBox lightMode = new JCheckBox("Light");
 	private final JButton saveButton = new JButton("Save");
 	private final JButton applyButton = new JButton("Apply");
 	private final JButton undoButton = new JButton("Undo");
@@ -131,10 +122,10 @@ public final class InspectorPanel extends PluginPanel {
 	private final Map<Object, Boolean> collapsedSections = new IdentityHashMap<>();
 	private final Timer candidateRefreshTimer = new Timer(100, e -> refreshCandidates());
 
-	private volatile boolean selectionMode;
+	@Getter
+    private volatile boolean selectionMode;
 	private volatile boolean modelModeEnabled = true;
 	private volatile boolean tileModeEnabled = true;
-	private volatile boolean lightModeEnabled;
 	private volatile GamevalManager.Handle gamevalHandle;
 
 	private NavigationButton navigationButton;
@@ -151,15 +142,14 @@ public final class InspectorPanel extends PluginPanel {
 		add(createContent(), BorderLayout.CENTER);
 
 		selectionButton.addActionListener(e -> setSelectionMode(!selectionMode));
-		selectionButton.setToolTipText("Select a model, tile, or light");
+		selectionButton.setToolTipText("Select a model or tile");
 		modelMode.addActionListener(e -> updateSelectionModes());
 		tileMode.addActionListener(e -> updateSelectionModes());
-		lightMode.addActionListener(e -> updateSelectionModes());
 		saveButton.setEnabled(false);
-		saveButton.setToolTipText("Save override or light definition edits to their JSON file");
+		saveButton.setToolTipText("Save override definition edits to their JSON file");
 		saveButton.addActionListener(e -> saveChanges());
 		applyButton.setEnabled(false);
-		applyButton.setToolTipText("Apply edits and reload the scene or lights");
+		applyButton.setToolTipText("Apply edits and reload the scene");
 		applyButton.addActionListener(e -> applyChanges());
 		undoButton.setToolTipText("Undo the last inspector edit (Ctrl+Z)");
 		redoButton.setToolTipText("Redo the last undone inspector edit (Ctrl+Y)");
@@ -184,12 +174,11 @@ public final class InspectorPanel extends PluginPanel {
 			if (updatingCandidates || candidates.getSelectedIndex() < 0) return;
 			int index = candidates.getSelectedIndex();
 			Hit selected = (Hit) candidates.getSelectedItem();
-			if (selected != null && !(selected.getObject() instanceof Light))
+			if (selected != null)
 				selectionOverlay.setHoveredCandidateIndex(index);
 			if (!selectionMode) {
 				if (selected != null) {
-					if (selected.getObject() instanceof Light) selectionOverlay.setSelectedObject(null);
-					else selectionOverlay.selectCandidate(index);
+					selectionOverlay.selectCandidate(index);
 					showSelection(selected.getObject());
 				}
 			}
@@ -199,7 +188,7 @@ public final class InspectorPanel extends PluginPanel {
 	public void startup() {
 		if (navigationButton != null) return;
 		panelWidth = loadPanelWidth();
-		inspectors.addAll(List.of(modelInspector, tileInspector, lightInspector));
+		inspectors.addAll(List.of(modelInspector, tileInspector));
 		history.setChangeListener(this::updateHistoryButtons);
 		selectionOverlay.setSelectionModes(modelModeEnabled, tileModeEnabled);
 		navigationButton = NavigationButton.builder()
@@ -214,7 +203,6 @@ public final class InspectorPanel extends PluginPanel {
 	public void shutdown() {
 		onDeactivate();
 		history.setChangeListener(null);
-		clientThread.invoke(() -> lightGizmoOverlay.setActive(false));
 		if (navigationButton != null) clientToolbar.removeNavigation(navigationButton);
 		navigationButton = null;
 	}
@@ -269,7 +257,6 @@ public final class InspectorPanel extends PluginPanel {
 		modes.setOpaque(false);
 		modes.add(modelMode);
 		modes.add(tileMode);
-		modes.add(lightMode);
 		header.add(title, BorderLayout.NORTH);
 		header.add(modes, BorderLayout.CENTER);
 		header.add(controls, BorderLayout.SOUTH);
@@ -306,11 +293,9 @@ public final class InspectorPanel extends PluginPanel {
 		else SwingUtilities.invokeLater(update);
 	}
 
-	public boolean isSelectionMode() { return selectionMode; }
-	@Override
+    @Override
 	public void onActivate() {
 		ensureGamevalHandle();
-		clientThread.invoke(() -> lightGizmoOverlay.setActive(lightModeEnabled));
 	}
 
 	@Override
@@ -349,21 +334,15 @@ public final class InspectorPanel extends PluginPanel {
 			return;
 		}
 		Object object = selected.getObject();
-		if (object instanceof Light) selectionOverlay.setSelectedObject(null);
-		else selectionOverlay.selectCandidate(candidates.getSelectedIndex());
+		selectionOverlay.selectCandidate(candidates.getSelectedIndex());
 		showSelection(object);
 	}
 
 	private void refreshCandidates() {
 		List<Hit> next = new ArrayList<>(selectionOverlay.getHoverCandidates());
 		int sceneCandidateCount = next.size();
-		if (lightModeEnabled) {
-			for (Light light : lightGizmoOverlay.getHoveredLights())
-				next.add(Hit.forLight(light));
-		}
 		int preferredIndex = next.isEmpty() ? -1 :
-			lightModeEnabled && next.size() > sceneCandidateCount ? sceneCandidateCount :
-			Math.min(selectionOverlay.getHoveredCandidateIndex(), sceneCandidateCount - 1);
+                Math.min(selectionOverlay.getHoveredCandidateIndex(), sceneCandidateCount - 1);
 		if (candidateListMatches(next)) {
 			if (selectionMode && preferredIndex >= 0) {
 				candidates.setSelectedIndex(preferredIndex);
@@ -395,10 +374,8 @@ public final class InspectorPanel extends PluginPanel {
 	private void updateSelectionModes() {
 		modelModeEnabled = modelMode.isSelected();
 		tileModeEnabled = tileMode.isSelected();
-		lightModeEnabled = lightMode.isSelected();
 		selectionOverlay.setSelectionModes(modelModeEnabled, tileModeEnabled);
 		selectionButton.setEnabled(hasEnabledMode());
-		clientThread.invoke(() -> lightGizmoOverlay.setActive(lightModeEnabled));
 		if (selectionMode && !hasEnabledMode()) setSelectionMode(false);
 		if (selection != null && !isSelectionEnabled(selection)) {
 			selection = null;
@@ -412,11 +389,10 @@ public final class InspectorPanel extends PluginPanel {
 	}
 
 	private boolean hasEnabledMode() {
-		return modelModeEnabled || tileModeEnabled || lightModeEnabled;
+		return modelModeEnabled || tileModeEnabled;
 	}
 
 	private boolean isSelectionEnabled(Object selected) {
-		if (selected instanceof Light) return lightModeEnabled;
 		if (selected instanceof Tile) return tileModeEnabled;
 		return modelModeEnabled;
 	}
@@ -437,11 +413,6 @@ public final class InspectorPanel extends PluginPanel {
 	private void applyChanges() {
 		Object selected = selection;
 		clientThread.invoke(() -> {
-			if (selected instanceof Light) {
-				lightManager.apply();
-				SwingUtilities.invokeLater(() -> status.setText("Light reload requested."));
-				return;
-			}
 			if (plugin.renderer == null) {
 				SwingUtilities.invokeLater(() -> status.setText("Renderer unavailable."));
 				return;
@@ -454,10 +425,7 @@ public final class InspectorPanel extends PluginPanel {
 	private void saveChanges() {
 		Object selected = selection;
 		try {
-			if (selected instanceof Light) {
-				lightManager.save();
-				status.setText("Light definitions saved.");
-			} else if (selected instanceof Tile) {
+			if (selected instanceof Tile) {
 				tileOverrideManager.save();
 				status.setText("Tile overrides saved.");
 			} else {
