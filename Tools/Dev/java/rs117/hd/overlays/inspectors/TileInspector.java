@@ -1,14 +1,28 @@
 package rs117.hd.overlays.inspectors;
 
 import javax.inject.Inject;
+
+import lombok.extern.slf4j.Slf4j;
 import net.runelite.api.GameObject;
 import net.runelite.api.Tile;
 import rs117.hd.HdPlugin;
 import rs117.hd.scene.GamevalManager;
 import rs117.hd.scene.TileOverrideManager;
 import rs117.hd.scene.tile_overrides.TileOverride;
+import rs117.hd.utils.Props;
+import rs117.hd.utils.ResourcePath;
 
+import java.io.IOException;
+
+import static rs117.hd.scene.TileOverrideManager.OVERRIDES;
+import static rs117.hd.utils.ResourcePath.path;
+
+@Slf4j
 public final class TileInspector implements Inspector {
+
+	private static final ResourcePath TILE_OVERRIDES_PATH = Props
+			.getFile("rlhd.tile-overrides-path", () -> path(TileOverrideManager.class, "tile_overrides.json"));
+
 	@Inject
 	private HdPlugin plugin;
 
@@ -66,5 +80,25 @@ public final class TileInspector implements Inspector {
 		}
 		for (var field : OverrideFields.changedFields(override))
 			section.field(field);
+	}
+
+	public void save() {
+		if (!TILE_OVERRIDES_PATH.isFileSystemResource() || OVERRIDES == null)
+			return;
+
+		final TileOverride[] definitions = new TileOverride[OVERRIDES.length];
+		for (int i = 0; i < OVERRIDES.length; i++) {
+			TileOverride override = OVERRIDES[i];
+			definitions[i] = plugin.getGson().fromJson(plugin.getGson().toJson(override), TileOverride.class);
+			definitions[i].uvScale = 1 / definitions[i].uvScale;
+		}
+
+		String json = plugin.getGson().toJson(definitions);
+		TILE_OVERRIDES_PATH.mkdirs();
+		try (var writer = TILE_OVERRIDES_PATH.toWriter()) {
+			writer.write(json);
+		} catch (IOException | RuntimeException ex) {
+			log.error("Failed to save tile overrides", ex);
+		}
 	}
 }

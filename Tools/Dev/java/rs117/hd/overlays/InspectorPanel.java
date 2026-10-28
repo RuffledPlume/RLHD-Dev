@@ -96,9 +96,6 @@ public final class InspectorPanel extends PluginPanel {
 	private ModelOverrideManager modelOverrideManager;
 
 	@Inject
-	private TileOverrideManager tileOverrideManager;
-
-	@Inject
 	private InspectorSelectionOverlay selectionOverlay;
 
 	@Inject
@@ -411,7 +408,6 @@ public final class InspectorPanel extends PluginPanel {
 	}
 
 	private void applyChanges() {
-		Object selected = selection;
 		clientThread.invoke(() -> {
 			if (plugin.renderer == null) {
 				SwingUtilities.invokeLater(() -> status.setText("Renderer unavailable."));
@@ -423,17 +419,9 @@ public final class InspectorPanel extends PluginPanel {
 	}
 
 	private void saveChanges() {
-		Object selected = selection;
-		try {
-			if (selected instanceof Tile) {
-				tileOverrideManager.save();
-				status.setText("Tile overrides saved.");
-			} else {
-				modelOverrideManager.save();
-				status.setText("Model overrides saved.");
-			}
-		} catch (IOException | RuntimeException ex) {
-			status.setText("Save failed: " + ex.getMessage());
+		for (Inspector inspector : inspectors) {
+			if (inspector.isApplicable(selection))
+				inspector.save();
 		}
 	}
 
@@ -447,7 +435,8 @@ public final class InspectorPanel extends PluginPanel {
 		ensureGamevalHandle();
 		InspectorOutput out = new InspectorOutput();
 		for (Inspector inspector : inspectors) {
-			if (inspector.isApplicable(selected)) inspector.draw(selected, out, gamevalHandle);
+			if (inspector.isApplicable(selected))
+				inspector.draw(selected, out, gamevalHandle);
 		}
 		if (out.isEmpty()) {
 			showMessage(UNSUPPORTED_SELECTION);

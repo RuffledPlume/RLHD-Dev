@@ -174,7 +174,7 @@ public final class ModelInspector implements Inspector {
 	private ModelOverride makeUnique(int uuid, ModelOverride parent) {
 		ModelOverride unique = parent.copy();
 		if (parent.colorOverrides != null) unique.colorOverrides = parent.colorOverrides.clone();
-		if (parent.areaOverrides != null) unique.areaOverrides = new LinkedHashMap<>(parent.areaOverrides);
+		if (parent.areaOverrides != null) unique.areaOverrides = new LinkedHashMap<>();
 		if (parent.materialOverrides != null) unique.materialOverrides = new HashMap<>(parent.materialOverrides);
 		setOnlyId(unique, uuid);
 		history.execute(
