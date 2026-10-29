@@ -1,25 +1,43 @@
 package rs117.hd.overlays.inspectors;
 
+import java.io.IOException;
 import java.lang.reflect.Field;
 import java.util.ArrayList;
+import java.util.Collections;
 import java.util.HashMap;
 import java.util.HashSet;
-import java.util.LinkedHashMap;
+import java.util.IdentityHashMap;
 import java.util.List;
+import java.util.Map;
 import java.util.Set;
 import javax.inject.Inject;
+import lombok.extern.slf4j.Slf4j;
 import net.runelite.api.*;
 import net.runelite.api.coords.WorldPoint;
+import rs117.hd.HdPlugin;
 import rs117.hd.model.ModelExporter;
 import rs117.hd.scene.GamevalManager;
 import rs117.hd.scene.ModelOverrideManager;
+import rs117.hd.scene.areas.AABB;
 import rs117.hd.scene.model_overrides.ModelOverride;
 import rs117.hd.utils.ModelHash;
+import rs117.hd.utils.Props;
+import rs117.hd.utils.ResourcePath;
 import rs117.hd.utils.Util;
 
+import static rs117.hd.utils.ResourcePath.path;
+
+@Slf4j
 public final class ModelInspector implements Inspector {
+
+	private static final ResourcePath MODEL_OVERRIDES_PATH = Props
+			.getFile("rlhd.model-overrides-path", () -> path(ModelOverrideManager.class, "model_overrides.json"));
+
 	@Inject
 	private Client client;
+
+	@Inject
+	private HdPlugin plugin;
 
 	@Inject
 	private ModelOverrideManager modelOverrideManager;
@@ -77,7 +95,7 @@ public final class ModelInspector implements Inspector {
 			for (Field field : OverrideFields.fields(override))
 				if (field.getName().equals("areas")) parentSection.field(field);
 			for (Field field : OverrideFields.changedFields(override)) parentSection.field(field);
-			parentSection.action("Make unique", modelOverrideManager.isSharedOverride(uuid),
+			parentSection.action("Make unique", isSharedOverride(uuid),
 				() -> makeUnique(uuid, baseOverride));
 			parentSection.action("Add color", () -> addColorOverride(override));
 			addColorOverrideSections(parentSection, override);
@@ -88,18 +106,213 @@ public final class ModelInspector implements Inspector {
 		}
 	}
 
+	@Override
+	public void save() {
+		try {
+			if (!MODEL_OVERRIDES_PATH.isFileSystemResource())
+				throw new IOException("Model overrides are loaded from a classpath resource; set rlhd.model-overrides-path to a writable file to save.");
+
+			List<ModelOverride> sourceDefinitions;
+			var definitions = modelOverrideManager.getModelOverrideDefinitions();
+			synchronized (definitions) {
+				sourceDefinitions = new ArrayList<>(definitions);
+			}
+			String json = plugin.getGson().toJson(getSaveDefinitions(sourceDefinitions));
+			MODEL_OVERRIDES_PATH.mkdirs();
+			try (var writer = MODEL_OVERRIDES_PATH.toWriter()) {
+				writer.write(json);
+			} catch (IOException | RuntimeException ex) {
+				throw ex;
+			}
+		} catch (IOException | RuntimeException ex) {
+			log.error("Failed to save model overrides", ex);
+		}
+	}
+
+	private boolean isSharedOverride(int uuid) {
+		int baseUuid = ModelHash.getUuidWithoutSubType(uuid);
+		var overrides = modelOverrideManager.getModelOverrides();
+		ModelOverride override = overrides.get(baseUuid);
+		if (override == null || override == ModelOverride.NONE || override.isDummy || override.isGenerated)
+			return false;
+
+		int matches = 0;
+		for (var entry : overrides) {
+			if (entry.getValue() == override && ++matches > 1)
+				return true;
+		}
+		return false;
+	}
+
+	private void replaceOverride(int uuid, ModelOverride override) {
+		modelOverrideManager.getModelOverrides().put(ModelHash.getUuidWithoutSubType(uuid), override);
+	}
+
+	private Map<Integer, ModelOverride> getObjectOverrideMappings(Set<Integer> objectIds) {
+		Map<Integer, ModelOverride> mappings = new HashMap<>();
+		var overrides = modelOverrideManager.getModelOverrides();
+		for (int id : objectIds) {
+			int uuid = ModelHash.packUuid(ModelHash.TYPE_OBJECT, id);
+			mappings.put(id, overrides.get(uuid));
+		}
+		return mappings;
+	}
+
+	private void setObjectOverrideMappings(Map<Integer, ModelOverride> mappings) {
+		var overrides = modelOverrideManager.getModelOverrides();
+		for (var entry : mappings.entrySet()) {
+			int uuid = ModelHash.packUuid(ModelHash.TYPE_OBJECT, entry.getKey());
+			if (entry.getValue() == null)
+				overrides.remove(uuid);
+			else
+				overrides.put(uuid, entry.getValue());
+		}
+	}
+
+	public List<ModelOverride> getAreaOverrideOwners(ModelOverride areaOverride) {
+		List<ModelOverride> owners = new ArrayList<>();
+		var seen = Collections.newSetFromMap(new IdentityHashMap<ModelOverride, Boolean>());
+		for (var entry : modelOverrideManager.getModelOverrides()) {
+			ModelOverride root = entry.getValue();
+			if (containsAreaOverride(root, areaOverride) && seen.add(root))
+				owners.add(root);
+		}
+		return owners;
+	}
+
+	public void updateAreaOverrideMappings(List<ModelOverride> owners, ModelOverride areaOverride) {
+		var areas = areaOverride.areas;
+		int added = areas == null ? 0 : areas.length;
+		for (ModelOverride root : owners) {
+			int kept = 0;
+			if (root.areaOverrides != null)
+				for (var override : root.areaOverrides)
+					if (override != areaOverride)
+						kept++;
+
+			if (kept + added == 0) {
+				root.areaOverrides = null;
+				root.areaOverrideBounds = null;
+				continue;
+			}
+
+			var overrides = new ModelOverride[kept + added];
+			var bounds = new AABB[kept + added];
+			int index = 0;
+			if (root.areaOverrides != null) {
+				for (int i = 0; i < root.areaOverrides.length; i++) {
+					if (root.areaOverrides[i] == areaOverride) continue;
+					overrides[index] = root.areaOverrides[i];
+					bounds[index++] = root.areaOverrideBounds[i];
+				}
+			}
+			if (areas != null) {
+				for (var area : areas) {
+					overrides[index] = areaOverride;
+					bounds[index++] = area;
+				}
+			}
+			root.areaOverrides = overrides;
+			root.areaOverrideBounds = bounds;
+		}
+	}
+
+	private static boolean containsAreaOverride(ModelOverride root, ModelOverride areaOverride) {
+		if (root.areaOverrides == null)
+			return false;
+		for (var override : root.areaOverrides)
+			if (override == areaOverride)
+				return true;
+		return false;
+	}
+
+	private static boolean hasAreaOverride(ModelOverride root, AABB area, ModelOverride override) {
+		if (root.areaOverrides == null || root.areaOverrideBounds == null)
+			return false;
+		for (int i = 0; i < root.areaOverrides.length; i++)
+			if (root.areaOverrideBounds[i] == area && root.areaOverrides[i] == override)
+				return true;
+		return false;
+	}
+
+	private void addDefinition(ModelOverride override) {
+		var definitions = modelOverrideManager.getModelOverrideDefinitions();
+		synchronized (definitions) {
+			if (!definitions.contains(override))
+				definitions.add(override);
+		}
+	}
+
+	private void removeDefinition(ModelOverride override) {
+		var definitions = modelOverrideManager.getModelOverrideDefinitions();
+		synchronized (definitions) {
+			definitions.remove(override);
+		}
+	}
+
+	private ModelOverride[] getSaveDefinitions(List<ModelOverride> sourceDefinitions) {
+		List<ModelOverride> definitions = new ArrayList<>();
+		var overrides = modelOverrideManager.getModelOverrides();
+		for (ModelOverride definition : sourceDefinitions) {
+			if (definition.areas == null || definition.areas.length == 0) {
+				definitions.add(definition);
+				continue;
+			}
+
+			for (var area : definition.areas) {
+				Set<Integer> npcIds = new HashSet<>();
+				Set<Integer> objectIds = new HashSet<>();
+				Set<Integer> projectileIds = new HashSet<>();
+				Set<Integer> graphicsObjectIds = new HashSet<>();
+				for (var entry : overrides) {
+					var root = entry.getValue();
+					if (!hasAreaOverride(root, area, definition))
+						continue;
+
+					int id = ModelHash.getUuidId(entry.getKey());
+					switch (ModelHash.getUuidType(entry.getKey())) {
+						case ModelHash.TYPE_NPC:
+							npcIds.add(id);
+							break;
+						case ModelHash.TYPE_OBJECT:
+							objectIds.add(id);
+							break;
+						case ModelHash.TYPE_PROJECTILE:
+							projectileIds.add(id);
+							break;
+						case ModelHash.TYPE_GRAPHICS_OBJECT:
+							graphicsObjectIds.add(id);
+							break;
+					}
+				}
+
+				if (npcIds.isEmpty() && objectIds.isEmpty() && projectileIds.isEmpty() && graphicsObjectIds.isEmpty())
+					continue;
+
+				ModelOverride savedDefinition = definition.copy();
+				savedDefinition.areas = new AABB[]{area};
+				savedDefinition.npcIds = npcIds;
+				savedDefinition.objectIds = objectIds;
+				savedDefinition.projectileIds = projectileIds;
+				savedDefinition.graphicsObjectIds = graphicsObjectIds;
+				definitions.add(savedDefinition);
+			}
+		}
+		return definitions.toArray(ModelOverride[]::new);
+	}
+
 	private void addOverride(int uuid) {
 		ModelOverride override = new ModelOverride();
 		override.description = "UNKNOWN";
 		setOnlyId(override, uuid);
 		history.execute(
 			() -> {
-				modelOverrideManager.replaceOverride(uuid, ModelOverride.NONE);
-				modelOverrideManager.removeDefinition(override);
+				replaceOverride(uuid, ModelOverride.NONE);
+				removeDefinition(override);
 			},
 			() -> {
-				modelOverrideManager.replaceOverride(uuid, override);
-				modelOverrideManager.addDefinition(override);
+				replaceOverride(uuid, override);
+				addDefinition(override);
 			});
 	}
 
@@ -120,7 +333,7 @@ public final class ModelInspector implements Inspector {
 
 		Set<Integer> affectedIds = new HashSet<>(before);
 		affectedIds.addAll(after);
-		var beforeMappings = modelOverrideManager.getObjectOverrideMappings(affectedIds);
+		var beforeMappings = getObjectOverrideMappings(affectedIds);
 		var afterMappings = new HashMap<>(beforeMappings);
 		for (int id : before) {
 			if (!after.contains(id) && beforeMappings.get(id) == override)
@@ -131,11 +344,11 @@ public final class ModelInspector implements Inspector {
 		history.execute(
 			() -> {
 				override.objectIds = new HashSet<>(before);
-				modelOverrideManager.setObjectOverrideMappings(beforeMappings);
+				setObjectOverrideMappings(beforeMappings);
 			},
 			() -> {
 				override.objectIds = new HashSet<>(after);
-				modelOverrideManager.setObjectOverrideMappings(afterMappings);
+				setObjectOverrideMappings(afterMappings);
 			});
 	}
 
@@ -174,17 +387,20 @@ public final class ModelInspector implements Inspector {
 	private ModelOverride makeUnique(int uuid, ModelOverride parent) {
 		ModelOverride unique = parent.copy();
 		if (parent.colorOverrides != null) unique.colorOverrides = parent.colorOverrides.clone();
-		if (parent.areaOverrides != null) unique.areaOverrides = new LinkedHashMap<>();
+		if (parent.areaOverrides != null) {
+			unique.areaOverrides = parent.areaOverrides.clone();
+			unique.areaOverrideBounds = parent.areaOverrideBounds == null ? null : parent.areaOverrideBounds.clone();
+		}
 		if (parent.materialOverrides != null) unique.materialOverrides = new HashMap<>(parent.materialOverrides);
 		setOnlyId(unique, uuid);
 		history.execute(
 			() -> {
-				modelOverrideManager.replaceOverride(uuid, parent);
-				modelOverrideManager.removeDefinition(unique);
+				replaceOverride(uuid, parent);
+				removeDefinition(unique);
 			},
 			() -> {
-				modelOverrideManager.replaceOverride(uuid, unique);
-				modelOverrideManager.addDefinition(unique);
+				replaceOverride(uuid, unique);
+				addDefinition(unique);
 			});
 		return unique;
 	}

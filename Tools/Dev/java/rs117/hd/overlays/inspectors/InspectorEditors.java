@@ -16,7 +16,6 @@ import javax.swing.ListCellRenderer;
 import javax.swing.event.DocumentEvent;
 import javax.swing.event.DocumentListener;
 import net.runelite.client.ui.ColorScheme;
-import rs117.hd.scene.ModelOverrideManager;
 import rs117.hd.scene.model_overrides.ModelOverride;
 
 /** Builds the Swing editors the inspector uses to change override fields in place. */
@@ -40,7 +39,7 @@ public final class InspectorEditors {
 	}
 
 	/** An editor bound to the field of the given override, or a read-only label for unsupported types. */
-	public static JComponent create(Field field, Object target, InspectorHistory history, ModelOverrideManager modelOverrideManager) {
+	public static JComponent create(Field field, Object target, InspectorHistory history, ModelInspector modelInspector) {
 		Class<?> type = field.getType();
 		if (type == boolean.class || type == Boolean.class)
 			return checkBox(field, target, history);
@@ -52,8 +51,8 @@ public final class InspectorEditors {
 		if (OverrideFields.isEditable(field)) {
 			Runnable afterSet = null;
 			if (field.getName().equals("areas") && target instanceof ModelOverride) {
-				var owners = modelOverrideManager.getAreaOverrideOwners((ModelOverride) target);
-				afterSet = () -> modelOverrideManager.updateAreaOverrideMappings(owners, (ModelOverride) target);
+				var owners = modelInspector.getAreaOverrideOwners((ModelOverride) target);
+				afterSet = () -> modelInspector.updateAreaOverrideMappings(owners, (ModelOverride) target);
 			}
 			return textField(field, target, history, afterSet);
 		}

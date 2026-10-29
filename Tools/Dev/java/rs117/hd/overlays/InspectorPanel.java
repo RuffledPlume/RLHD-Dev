@@ -58,7 +58,6 @@ import rs117.hd.overlays.inspectors.OverrideFields;
 import rs117.hd.overlays.inspectors.TileInspector;
 import rs117.hd.scene.GamevalManager;
 import rs117.hd.scene.LightManager;
-import rs117.hd.scene.ModelOverrideManager;
 import rs117.hd.scene.TileOverrideManager;
 import rs117.hd.scene.lights.Light;
 import rs117.hd.utils.SceneGeometry.Hit;
@@ -91,9 +90,6 @@ public final class InspectorPanel extends PluginPanel {
 
 	@Inject
 	private InspectorHistory history;
-
-	@Inject
-	private ModelOverrideManager modelOverrideManager;
 
 	@Inject
 	private InspectorSelectionOverlay selectionOverlay;
@@ -560,7 +556,7 @@ public final class InspectorPanel extends PluginPanel {
 
 	private JComponent createRow(InspectorOutput.Row row, Object target) {
 		JComponent editor = row.field != null
-			? InspectorEditors.create(row.field, target, history, modelOverrideManager)
+			? InspectorEditors.create(row.field, target, history, modelInspector)
 			: InspectorEditors.readOnly(row.value);
 		if (row.actionLabel == null) {
 			return createRow(row.field == null ? row.key : OverrideFields.label(row.field), editor);
@@ -608,7 +604,7 @@ public final class InspectorPanel extends PluginPanel {
 	}
 
 	private JComponent createFieldRow(Field field, Object target) {
-		return createRow(OverrideFields.label(field), InspectorEditors.create(field, target, history, modelOverrideManager));
+		return createRow(OverrideFields.label(field), InspectorEditors.create(field, target, history, modelInspector));
 	}
 
 	private JComponent createRow(String key, JComponent editor) {
