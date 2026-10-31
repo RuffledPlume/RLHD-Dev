@@ -11,5 +11,8 @@ public interface Inspector {
 
 	void draw(Object selected, InspectorOutput output, GamevalManager.Handle gamevals);
 
+	/** Applies any pending edits to the live overrides. */
+	default void apply() {}
+
 	default void save() {}
 }

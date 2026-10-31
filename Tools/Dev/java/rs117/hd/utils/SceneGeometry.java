@@ -130,28 +130,87 @@ public final class SceneGeometry {
         Tile[][][] tiles = scene.getExtendedTiles();
         int sceneOffset = worldView.isTopLevel() ? HDUtils.EXTENDED_SCENE_OFFSET : 0;
         int tileSize = LOCAL_TILE_SIZE;
-        for (int plane = tiles.length - 1; plane >= 0; plane--) {
-            for (int bridgePass = 1; bridgePass >= 0; bridgePass--) {
-                for (int x = 0; x < tiles[plane].length; x++) {
-                    for (int y = 0; y < tiles[plane][x].length; y++) {
-                        Tile sceneTile = tiles[plane][x][y];
-                        if (sceneTile == null) continue;
-                        Tile tile = bridgePass == 1 ? sceneTile.getBridge() : sceneTile;
-                        if (tile == null || !isVisible(tile) ||
-                                !isTileVisibleByRoofRemoval(scene, plane, x - sceneOffset, y - sceneOffset)) continue;
+        if (tiles.length == 0 || tiles[0].length == 0 || tiles[0][0].length == 0) return false;
 
-                        int tx = (x - sceneOffset) * tileSize;
-                        int ty = (y - sceneOffset) * tileSize;
-                        float h00 = worldView.getTileHeight(tx, ty, plane);
-                        float h10 = worldView.getTileHeight(tx + tileSize, ty, plane);
-                        float h11 = worldView.getTileHeight(tx + tileSize, ty + tileSize, plane);
-                        float h01 = worldView.getTileHeight(tx, ty + tileSize, plane);
+        int width = tiles[0].length;
+        int height = tiles[0][0].length;
+        float minX = -sceneOffset * tileSize;
+        float minY = -sceneOffset * tileSize;
+        float maxX = (width - sceneOffset) * tileSize;
+        float maxY = (height - sceneOffset) * tileSize;
 
-                        float t = rayTriangle(ray, tx, ty, h00, tx + tileSize, ty, h10, tx + tileSize, ty + tileSize, h11, Float.POSITIVE_INFINITY);
-                        if (t < 0) t = rayTriangle(ray, tx, ty, h00, tx + tileSize, ty + tileSize, h11, tx, ty + tileSize, h01, Float.POSITIVE_INFINITY);
-                        if (t >= 0) hits.add(new Hit(new Candidate(tile, null, t, worldView, plane, x, y)));
-                    }
+        // Clip the ray to the scene's X/Y footprint, then traverse only the tiles
+        // it crosses instead of evaluating every tile in the extended scene.
+        float start = 0;
+        float end = Float.POSITIVE_INFINITY;
+        if (abs(ray.dx) < 1e-6f) {
+            if (ray.x < minX || ray.x > maxX) return false;
+        } else {
+            float near = (minX - ray.x) / ray.dx;
+            float far = (maxX - ray.x) / ray.dx;
+            start = max(start, min(near, far));
+            end = min(end, max(near, far));
+        }
+        if (abs(ray.dy) < 1e-6f) {
+            if (ray.y < minY || ray.y > maxY) return false;
+        } else {
+            float near = (minY - ray.y) / ray.dy;
+            float far = (maxY - ray.y) / ray.dy;
+            start = max(start, min(near, far));
+            end = min(end, max(near, far));
+        }
+        if (end < start) return false;
+
+        // Nudge into the first cell so rays starting exactly on a tile boundary
+        // choose the cell in their direction of travel.
+        float traversalStart = min(start + 0.001f, end);
+        int x = (int) floor((ray.x + ray.dx * traversalStart - minX) / tileSize);
+        int y = (int) floor((ray.y + ray.dy * traversalStart - minY) / tileSize);
+        if (x < 0) x = 0;
+        else if (x >= width) x = width - 1;
+        if (y < 0) y = 0;
+        else if (y >= height) y = height - 1;
+        int stepX = ray.dx > 0 ? 1 : ray.dx < 0 ? -1 : 0;
+        int stepY = ray.dy > 0 ? 1 : ray.dy < 0 ? -1 : 0;
+        float deltaX = stepX == 0 ? Float.POSITIVE_INFINITY : tileSize / abs(ray.dx);
+        float deltaY = stepY == 0 ? Float.POSITIVE_INFINITY : tileSize / abs(ray.dy);
+        float boundaryX = minX + (stepX > 0 ? x + 1 : x) * tileSize;
+        float boundaryY = minY + (stepY > 0 ? y + 1 : y) * tileSize;
+        float nextX = stepX == 0 ? Float.POSITIVE_INFINITY : (boundaryX - ray.x) / ray.dx;
+        float nextY = stepY == 0 ? Float.POSITIVE_INFINITY : (boundaryY - ray.y) / ray.dy;
+
+        while (x >= 0 && x < width && y >= 0 && y < height && traversalStart <= end) {
+            for (int plane = tiles.length - 1; plane >= 0; plane--) {
+                Tile sceneTile = tiles[plane][x][y];
+                if (sceneTile == null) continue;
+                for (int bridgePass = 1; bridgePass >= 0; bridgePass--) {
+                    Tile tile = bridgePass == 1 ? sceneTile.getBridge() : sceneTile;
+                    if (tile == null || !isVisible(tile) ||
+                            !isTileVisibleByRoofRemoval(scene, plane, x - sceneOffset, y - sceneOffset)) continue;
+
+                    int tx = (x - sceneOffset) * tileSize;
+                    int ty = (y - sceneOffset) * tileSize;
+                    float h00 = worldView.getTileHeight(tx, ty, plane);
+                    float h10 = worldView.getTileHeight(tx + tileSize, ty, plane);
+                    float h11 = worldView.getTileHeight(tx + tileSize, ty + tileSize, plane);
+                    float h01 = worldView.getTileHeight(tx, ty + tileSize, plane);
+
+                    float t = rayTriangle(ray, tx, ty, h00, tx + tileSize, ty, h10,
+                            tx + tileSize, ty + tileSize, h11, Float.POSITIVE_INFINITY);
+                    if (!Float.isFinite(t)) t = rayTriangle(ray, tx, ty, h00, tx + tileSize, ty + tileSize, h11,
+                            tx, ty + tileSize, h01, Float.POSITIVE_INFINITY);
+                    if (Float.isFinite(t)) hits.add(new Hit(new Candidate(tile, null, t, worldView, plane, x, y)));
                 }
+            }
+
+            if (nextX < nextY) {
+                traversalStart = nextX;
+                nextX += deltaX;
+                x += stepX;
+            } else {
+                traversalStart = nextY;
+                nextY += deltaY;
+                y += stepY;
             }
         }
         return hits.size() > originalSize;
@@ -204,7 +263,9 @@ public final class SceneGeometry {
 
     private boolean isVisible(Tile tile) {
         SceneTilePaint paint = tile.getSceneTilePaint();
-        return (paint != null && paint.getNeColor() != HIDDEN_HSL) || tile.getSceneTileModel() != null;
+        SceneTileModel model = tile.getSceneTileModel();
+        if (paint == null && model == null) return false;
+        return model != null || paint.getNeColor() != HIDDEN_HSL;
     }
 
     private boolean isTileVisibleByRoofRemoval(Scene scene, int plane, int x, int y) {

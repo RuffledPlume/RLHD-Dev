@@ -17,7 +17,12 @@ public final class DrawCallbacksRedirector implements DrawCallbacks {
 	@Inject
 	private SceneGeometry sceneGeometry;
 
-    private DrawCallbacks previous;
+	private DrawCallbacks previous;
+	private Runnable sceneLoadCallback = () -> {};
+
+	public void setSceneLoadCallback(Runnable callback) {
+		sceneLoadCallback = callback == null ? () -> {} : callback;
+	}
 
 	public void install() {
 		previous = client.getDrawCallbacks();
@@ -72,7 +77,9 @@ public final class DrawCallbacksRedirector implements DrawCallbacks {
 
 	@Override
 	public void loadScene(Scene scene) {
-		previous.loadScene(scene);
+		DrawCallbacks callbacks = previous;
+		sceneLoadCallback.run();
+		callbacks.loadScene(scene);
 	}
 
 	@Override
@@ -94,7 +101,9 @@ public final class DrawCallbacksRedirector implements DrawCallbacks {
 
 	@Override
 	public void loadScene(WorldView worldView, Scene scene) {
-		previous.loadScene(worldView, scene);
+		DrawCallbacks callbacks = previous;
+		sceneLoadCallback.run();
+		callbacks.loadScene(worldView, scene);
 	}
 
 	@Override

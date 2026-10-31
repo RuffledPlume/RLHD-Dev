@@ -81,7 +81,10 @@ public final class InspectorSelectionOverlay extends Overlay {
 		setPriority(OverlayPriority.HIGH);
 	}
 
-	public void startUp() { eventBus.register(this); }
+	public void startUp() {
+		drawCallbacksRedirector.install();
+		eventBus.register(this);
+	}
 
 	public void shutDown() {
 		selectionMode = false;
@@ -92,6 +95,7 @@ public final class InspectorSelectionOverlay extends Overlay {
 		selectedTile = null;
 		sceneGeometry.reset();
 		setActive(false);
+		drawCallbacksRedirector.uninstall();
 		eventBus.unregister(this);
 	}
 
@@ -104,11 +108,19 @@ public final class InspectorSelectionOverlay extends Overlay {
 			hoveredTile = null;
 			hoverCandidates = Collections.emptyList();
 			hoveredCandidateIndex = 0;
-			drawCallbacksRedirector.install();
-		} else {
-			drawCallbacksRedirector.uninstall();
 		}
 		setActive(enabled || selectedObject != null || selectedTile != null);
+	}
+
+	public void clearSelection() {
+		selectionMode = false;
+		selectedObject = null;
+		selectedTile = null;
+		hoveredObject = null;
+		hoveredTile = null;
+		hoverCandidates = Collections.emptyList();
+		hoveredCandidateIndex = 0;
+		setActive(false);
 	}
 
 	public void setSelectionModes(boolean modelEnabled, boolean tileEnabled) {

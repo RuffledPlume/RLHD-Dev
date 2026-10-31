@@ -2,6 +2,7 @@ package rs117.hd.overlays.inspectors;
 
 import java.awt.BorderLayout;
 import java.awt.Color;
+import java.awt.Component;
 import java.awt.Dimension;
 import java.awt.event.FocusAdapter;
 import java.awt.event.FocusEvent;
@@ -10,12 +11,11 @@ import java.awt.event.KeyEvent;
 import java.awt.event.MouseAdapter;
 import java.awt.event.MouseEvent;
 import java.util.ArrayList;
-import java.util.Comparator;
 import java.util.List;
 import java.util.Locale;
-import java.util.Map;
-import java.util.Set;
-import java.util.function.IntConsumer;
+import java.util.function.Consumer;
+import java.util.function.Function;
+import javax.swing.DefaultListCellRenderer;
 import javax.swing.DefaultListModel;
 import javax.swing.JLabel;
 import javax.swing.JList;
@@ -29,33 +29,44 @@ import javax.swing.event.DocumentEvent;
 import javax.swing.event.DocumentListener;
 import net.runelite.client.ui.ColorScheme;
 
-/** A searchable picker for adding GameVal object IDs to a model override. */
-public final class ObjectIdSearchBox extends JPanel {
+/** A searchable dropdown for selecting an item from a supplied list. */
+public final class SearchBox<T> extends JPanel {
 	private static final int MAX_VISIBLE_ROWS = 10;
-	private static final int MAX_SUGGESTIONS = 100;
-	private static final String PLACEHOLDER = "Add object ID…";
 
-	private final List<Option> available = new ArrayList<>();
-	private final Set<Integer> currentIds;
-	private final IntConsumer onPick;
+	private final List<T> available;
+	private final Function<T, String> displayText;
+	private final Function<T, String> searchText;
+	private final Consumer<T> onPick;
+	private final int maxSuggestions;
+	private final String placeholder;
 	private final JTextField search = new JTextField();
-	private final DefaultListModel<Option> matches = new DefaultListModel<>();
-	private final JList<Option> suggestions = new JList<>(matches);
+	private final DefaultListModel<T> matches = new DefaultListModel<>();
+	private final JList<T> suggestions = new JList<>(matches);
 	private final JPopupMenu popup = new JPopupMenu();
-	private boolean placeholder = true;
+	private boolean placeholderShown = true;
+	private boolean keepSelection;
+	private boolean suppressDocumentRefresh;
 
-	public ObjectIdSearchBox(Map<String, Integer> objectNames, Set<Integer> currentIds, IntConsumer onPick) {
+	public SearchBox(
+		List<T> available,
+		Function<T, String> displayText,
+		Function<T, String> searchText,
+		String placeholder,
+		String toolTip,
+		int maxSuggestions,
+		Consumer<T> onPick
+	) {
 		super(new BorderLayout());
-		this.currentIds = currentIds;
+		this.available = new ArrayList<>(available);
+		this.displayText = displayText;
+		this.searchText = searchText;
+		this.placeholder = placeholder;
+		this.maxSuggestions = maxSuggestions;
 		this.onPick = onPick;
-		for (var entry : objectNames.entrySet())
-			available.add(new Option(entry.getKey(), entry.getValue()));
-		available.sort(Comparator.comparing((Option option) -> option.name, String.CASE_INSENSITIVE_ORDER)
-			.thenComparingInt(option -> option.id));
 		setBackground(ColorScheme.DARKER_GRAY_COLOR);
 
-		search.setText(PLACEHOLDER);
-		search.setToolTipText("Type an object name to add its GameVal ID");
+		search.setText(placeholder);
+		search.setToolTipText(toolTip);
 		search.setBackground(ColorScheme.DARK_GRAY_COLOR);
 		search.setForeground(Color.GRAY);
 		search.setCaretColor(ColorScheme.LIGHT_GRAY_COLOR);
@@ -63,33 +74,33 @@ public final class ObjectIdSearchBox extends JPanel {
 		search.addFocusListener(new FocusAdapter() {
 			@Override
 			public void focusGained(FocusEvent e) {
-				if (placeholder) {
-					placeholder = false;
+				if (placeholderShown) {
+					placeholderShown = false;
 					search.setForeground(ColorScheme.LIGHT_GRAY_COLOR);
 					search.setText("");
+				} else {
+					search.selectAll();
+					refresh();
 				}
 			}
 
 			@Override
 			public void focusLost(FocusEvent e) {
 				popup.setVisible(false);
-				if (search.getText().isEmpty()) {
-					placeholder = true;
-					search.setForeground(Color.GRAY);
-					search.setText(PLACEHOLDER);
-				}
+				if (search.getText().isEmpty())
+					resetPlaceholder();
 			}
 		});
 
 		suggestions.setSelectionMode(ListSelectionModel.SINGLE_SELECTION);
 		suggestions.setBackground(ColorScheme.DARK_GRAY_COLOR);
 		suggestions.setForeground(ColorScheme.LIGHT_GRAY_COLOR);
-		suggestions.setCellRenderer((list, value, index, selected, focus) -> {
-			JLabel label = new JLabel(value.name + " (" + value.id + ")");
-			label.setOpaque(true);
-			label.setBackground(selected ? list.getSelectionBackground() : list.getBackground());
-			label.setForeground(selected ? list.getSelectionForeground() : list.getForeground());
-			return label;
+		DefaultListCellRenderer renderer = new DefaultListCellRenderer();
+		suggestions.setCellRenderer((list, value, index, selected, hasFocus) -> {
+			Component component = renderer.getListCellRendererComponent(list, value, index, selected, hasFocus);
+			if (component instanceof JLabel)
+				((JLabel) component).setText(displayText.apply(value));
+			return component;
 		});
 
 		JScrollPane scroll = new JScrollPane(suggestions);
@@ -98,9 +109,9 @@ public final class ObjectIdSearchBox extends JPanel {
 		popup.add(scroll);
 
 		search.getDocument().addDocumentListener(new DocumentListener() {
-			@Override public void insertUpdate(DocumentEvent e) { refresh(); }
-			@Override public void removeUpdate(DocumentEvent e) { refresh(); }
-			@Override public void changedUpdate(DocumentEvent e) { refresh(); }
+			@Override public void insertUpdate(DocumentEvent e) { if (!suppressDocumentRefresh) refresh(); }
+			@Override public void removeUpdate(DocumentEvent e) { if (!suppressDocumentRefresh) refresh(); }
+			@Override public void changedUpdate(DocumentEvent e) { if (!suppressDocumentRefresh) refresh(); }
 		});
 		search.addKeyListener(new KeyAdapter() {
 			@Override
@@ -127,46 +138,59 @@ public final class ObjectIdSearchBox extends JPanel {
 		suggestions.addMouseListener(new MouseAdapter() {
 			@Override
 			public void mouseClicked(MouseEvent e) {
-				if (e.getClickCount() >= 1) pickSelected();
+				if (e.getClickCount() >= 1)
+					pickSelected();
 			}
 		});
 	}
 
 	public void openSearch() {
-		placeholder = false;
+		placeholderShown = false;
 		search.setForeground(ColorScheme.LIGHT_GRAY_COLOR);
 		search.setText("");
 		SwingUtilities.invokeLater(() -> {
-			if (!isShowing()) return;
+			if (!isShowing())
+				return;
 			search.requestFocusInWindow();
 			refresh();
 		});
 	}
 
+	/** Keeps the picked value visible instead of restoring the placeholder after selection. */
+	public void setSelectionDisplay(String value) {
+		keepSelection = true;
+		placeholderShown = false;
+		search.setForeground(ColorScheme.LIGHT_GRAY_COLOR);
+		setSearchText(value);
+	}
+
 	private void refresh() {
-		if (!search.hasFocus() || placeholder) {
+		if (!search.hasFocus() || placeholderShown) {
 			popup.setVisible(false);
 			return;
 		}
+
 		String query = search.getText().trim().toLowerCase(Locale.ROOT);
 		matches.clear();
-		for (Option option : available) {
-			String name = option.name.toLowerCase(Locale.ROOT);
-			String id = Integer.toString(option.id);
-			if (currentIds.contains(option.id) || !query.isEmpty() && !name.contains(query) && !id.contains(query)) continue;
-			matches.addElement(option);
-			if (matches.size() >= MAX_SUGGESTIONS) break;
+		for (T item : available) {
+			if (!searchText.apply(item).toLowerCase(Locale.ROOT).contains(query))
+				continue;
+			matches.addElement(item);
+			if (maxSuggestions > 0 && matches.size() >= maxSuggestions)
+				break;
 		}
 		if (matches.isEmpty()) {
 			popup.setVisible(false);
 			return;
 		}
+
 		suggestions.setSelectedIndex(0);
 		suggestions.setVisibleRowCount(Math.min(MAX_VISIBLE_ROWS, matches.size()));
 		Dimension viewport = suggestions.getPreferredScrollableViewportSize();
 		SwingUtilities.invokeLater(() -> {
-			if (!isShowing() || !search.hasFocus()) return;
-			popup.setPopupSize(Math.max(getWidth(), 260), viewport.height + 4);
+			if (!isShowing() || !search.hasFocus())
+				return;
+			popup.setPopupSize(Math.max(getWidth(), 240), viewport.height + 4);
 			popup.show(this, 0, getHeight());
 			search.requestFocusInWindow();
 		});
@@ -183,22 +207,26 @@ public final class ObjectIdSearchBox extends JPanel {
 	}
 
 	private void pickSelected() {
-		Option option = suggestions.getSelectedValue();
-		if (option == null) return;
+		T selected = suggestions.getSelectedValue();
+		if (selected == null)
+			return;
 		popup.setVisible(false);
-		placeholder = true;
-		search.setForeground(Color.GRAY);
-		search.setText(PLACEHOLDER);
-		onPick.accept(option.id);
+		if (keepSelection)
+			setSelectionDisplay(displayText.apply(selected));
+		else
+			resetPlaceholder();
+		onPick.accept(selected);
 	}
 
-	private static final class Option {
-		private final String name;
-		private final int id;
+	private void resetPlaceholder() {
+		placeholderShown = true;
+		search.setForeground(Color.GRAY);
+		setSearchText(placeholder);
+	}
 
-		private Option(String name, int id) {
-			this.name = name;
-			this.id = id;
-		}
+	private void setSearchText(String text) {
+		suppressDocumentRefresh = true;
+		search.setText(text);
+		suppressDocumentRefresh = false;
 	}
 }

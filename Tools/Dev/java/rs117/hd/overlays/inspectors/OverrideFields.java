@@ -11,10 +11,12 @@ import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Objects;
+import javax.swing.JComponent;
 import com.google.gson.JsonElement;
 import com.google.gson.JsonArray;
 import com.google.gson.JsonParser;
 import com.google.gson.JsonPrimitive;
+import net.runelite.client.callback.ClientThread;
 import rs117.hd.scene.areas.AABB;
 import rs117.hd.scene.model_overrides.ModelOverride;
 import rs117.hd.scene.GroundMaterialManager;
@@ -31,8 +33,28 @@ import rs117.hd.scene.water_types.WaterType;
  */
 public final class OverrideFields {
 	private static final Map<Class<?>, Object> DEFAULTS = new HashMap<>();
+	private static final Map<Class<?>, Map<String, CustomEditor>> CUSTOM_EDITORS = new HashMap<>();
 
 	private OverrideFields() {}
+
+	@FunctionalInterface
+	public interface CustomEditor {
+		JComponent create(Field field, Object target, InspectorHistory history, ClientThread clientThread,
+			Object initialValue, String initialText, Object editorData);
+	}
+
+	public static void registerCustomEditor(Class<?> targetType, String fieldName, CustomEditor editor) {
+		CUSTOM_EDITORS.computeIfAbsent(targetType, ignored -> new HashMap<>()).put(fieldName, editor);
+	}
+
+	public static CustomEditor customEditor(Field field) {
+		for (Class<?> type = field.getDeclaringClass(); type != null; type = type.getSuperclass()) {
+			Map<String, CustomEditor> editors = CUSTOM_EDITORS.get(type);
+			if (editors != null && editors.containsKey(field.getName()))
+				return editors.get(field.getName());
+		}
+		return null;
+	}
 
 	/** All fields of the override which can be listed in the inspector, sorted by name. */
 	public static List<Field> fields(Object override) {
@@ -172,7 +194,8 @@ public final class OverrideFields {
 			|| field.getName().equals("areas") && type == AABB[].class
 			|| field.getName().equals("colors") && JsonElement.class.isAssignableFrom(type)
 			|| type.isEnum()
-			|| options(type) != null;
+			|| options(type) != null
+			|| customEditor(field) != null;
 	}
 
 	/** The selectable values for types backed by a registry, or null when the type has none. */

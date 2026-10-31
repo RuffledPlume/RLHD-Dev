@@ -8,6 +8,8 @@ import javax.swing.*;
 
 import lombok.extern.slf4j.Slf4j;
 import net.runelite.api.Client;
+import net.runelite.api.KeyCode;
+import net.runelite.api.events.ClientTick;
 import net.runelite.api.events.MenuOptionClicked;
 import net.runelite.client.callback.ClientThread;
 import net.runelite.client.config.ConfigManager;
@@ -66,6 +68,8 @@ public class DeveloperPlugin extends Plugin {
 	@DevInject
 	private InspectorPanel inspectorPanel;
 
+	private boolean inspectorSelectionShortcutHeld;
+
 	@Provides
 	DeveloperConfig provideConfig(ConfigManager configManager) {
 		return configManager.getConfig(DeveloperConfig.class);
@@ -73,6 +77,7 @@ public class DeveloperPlugin extends Plugin {
 
 	@Override
 	protected void startUp() {
+		inspectorSelectionShortcutHeld = false;
 		clientThread.invoke(() -> {
 			if (!initializeInjection()) {
 				SwingUtilities.invokeLater(() -> {
@@ -88,6 +93,7 @@ public class DeveloperPlugin extends Plugin {
 			modelImporter.startup();
 			modelExporter.startup();
 
+			drawCallbacksRedirector.setSceneLoadCallback(inspectorPanel::clearSelection);
 			inspectorSelectionOverlay.startUp();
 			inspectorPanel.startup();
 
@@ -97,8 +103,10 @@ public class DeveloperPlugin extends Plugin {
 
 	@Override
 	protected void shutDown() {
+		inspectorSelectionShortcutHeld = false;
 		clientThread.invoke(() -> {
 			inspectorSelectionOverlay.shutDown();
+			drawCallbacksRedirector.setSceneLoadCallback(null);
 			inspectorPanel.shutdown();
 
 			modelImporter.shutdown();
@@ -140,9 +148,29 @@ public class DeveloperPlugin extends Plugin {
 	@Subscribe
 	public void onMenuOptionClicked(MenuOptionClicked event) {
 		InspectorPanel panel = inspectorPanel;
-		if (panel == null || !panel.isSelectionMode()) return;
+		if (panel == null || (!panel.isSelectionMode() && !inspectorSelectionShortcutHeld))
+			return;
+
 		event.consume();
 		panel.selectAtCursor();
-		SwingUtilities.invokeLater(() -> panel.setSelectionMode(false));
+		if (!isInspectorSelectionShortcutHeld())
+			SwingUtilities.invokeLater(() -> panel.setSelectionMode(false));
 	}
+
+	@Subscribe
+	public void onClientTick(ClientTick event) {
+		boolean shortcutHeld = isInspectorSelectionShortcutHeld();
+		if (shortcutHeld == inspectorSelectionShortcutHeld)
+			return;
+		inspectorSelectionShortcutHeld = shortcutHeld;
+
+		InspectorPanel panel = inspectorPanel;
+		if (panel != null)
+			panel.setSelectionMode(shortcutHeld);
+	}
+
+	private boolean isInspectorSelectionShortcutHeld() {
+		return client.isKeyPressed(KeyCode.KC_CONTROL) && client.isKeyPressed(KeyCode.KC_ALT);
+	}
+
 }

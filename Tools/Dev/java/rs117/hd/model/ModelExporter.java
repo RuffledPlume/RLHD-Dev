@@ -1,15 +1,7 @@
 package rs117.hd.model;
 
-import java.awt.BasicStroke;
 import java.awt.Color;
-import java.awt.Dimension;
-import java.awt.Graphics2D;
-import java.awt.Shape;
-import java.awt.event.KeyEvent;
-import java.awt.event.MouseEvent;
-import java.awt.event.MouseWheelEvent;
 import java.awt.geom.AffineTransform;
-import java.awt.geom.Point2D;
 import java.awt.image.AffineTransformOp;
 import java.awt.image.BufferedImage;
 import java.io.ByteArrayOutputStream;
@@ -28,10 +20,10 @@ import java.util.List;
 import java.util.Map;
 import java.util.Objects;
 import java.util.Set;
+import java.util.function.Consumer;
 import java.util.stream.Collectors;
 import javax.imageio.ImageIO;
 import javax.inject.Inject;
-import javax.swing.SwingUtilities;
 import lombok.AllArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import net.runelite.api.*;
@@ -45,17 +37,6 @@ import net.runelite.client.chat.ChatMessageManager;
 import net.runelite.client.chat.QueuedMessage;
 import net.runelite.client.eventbus.EventBus;
 import net.runelite.client.eventbus.Subscribe;
-import net.runelite.client.input.KeyListener;
-import net.runelite.client.input.KeyManager;
-import net.runelite.client.input.MouseListener;
-import net.runelite.client.input.MouseManager;
-import net.runelite.client.input.MouseWheelListener;
-import net.runelite.client.ui.overlay.Overlay;
-import net.runelite.client.ui.overlay.OverlayLayer;
-import net.runelite.client.ui.overlay.OverlayManager;
-import net.runelite.client.ui.overlay.OverlayPosition;
-import net.runelite.client.ui.overlay.OverlayPriority;
-import net.runelite.client.ui.overlay.outline.ModelOutlineRenderer;
 import org.lwjgl.assimp.AIExportFormatDesc;
 import org.lwjgl.assimp.AIFace;
 import org.lwjgl.assimp.AIMaterial;
@@ -88,7 +69,6 @@ import rs117.hd.utils.HDUtils;
 import rs117.hd.utils.Mat4;
 import rs117.hd.utils.ModelHash;
 
-import static net.runelite.api.Perspective.*;
 import static org.lwjgl.assimp.Assimp.AI_MATKEY_GLTF_ALPHAMODE;
 import static org.lwjgl.assimp.Assimp.AI_MATKEY_NAME;
 import static org.lwjgl.assimp.Assimp._AI_MATKEY_TEXTURE_BASE;
@@ -125,11 +105,8 @@ import static rs117.hd.DeveloperPlugin.MODEL_EXPORTS;
 import static rs117.hd.utils.ResourcePath.path;
 
 @Slf4j
-public class ModelExporter extends Overlay implements MouseListener, MouseWheelListener, KeyListener {
+public class ModelExporter {
 	private static final boolean EMBED_TEXTURES = false;
-	private static final Color OUTLINE_COLOR = new Color(0xFFFF00FF, true);
-	private static final int OUTLINE_WIDTH = 4;
-	private static final int OUTLINE_FEATHER = 4;
 	private static final float[] ZEROS = new float[12];
 
 	@Inject
@@ -142,19 +119,7 @@ public class ModelExporter extends Overlay implements MouseListener, MouseWheelL
 	private EventBus eventBus;
 
 	@Inject
-	private KeyManager keyManager;
-
-	@Inject
-	private MouseManager mouseManager;
-
-	@Inject
-	private OverlayManager overlayManager;
-
-	@Inject
 	private ChatMessageManager chatMessageManager;
-
-	@Inject
-	private ModelOutlineRenderer modelOutlineRenderer;
 
 	@Inject
 	private HdPlugin plugin;
@@ -180,36 +145,12 @@ public class ModelExporter extends Overlay implements MouseListener, MouseWheelL
 	@Inject
 	private SceneTerrainExporter terrainExporter;
 
-	private int clientTickCount;
-	private int selectedIndex;
-	private int lastSelectedIndex = -1;
-	private Object selectedObject;
-	private final HashSet<Object> hoverSet = new HashSet<>();
-	private final Map<ActorSpotAnim, Actor> spotAnimActors = new IdentityHashMap<>();
-	private final Set<Object> hoverChecked = Collections.newSetFromMap(new IdentityHashMap<>());
-
 	public void startup() {
-		setPosition(OverlayPosition.DYNAMIC);
-		setLayer(OverlayLayer.ABOVE_SCENE);
-		setPriority(OverlayPriority.HIGH);
-
 		eventBus.register(this);
-		mouseManager.registerMouseListener(this);
-		mouseManager.registerMouseWheelListener(this);
-		keyManager.registerKeyListener(this);
-		SwingUtilities.invokeLater(() -> overlayManager.add(this));
 	}
 
 	public void shutdown() {
-		selectedObject = null;
-		hoverSet.clear();
-		hoverChecked.clear();
-		spotAnimActors.clear();
 		eventBus.unregister(this);
-		overlayManager.remove(this);
-		mouseManager.unregisterMouseListener(this);
-		mouseManager.unregisterMouseWheelListener(this);
-		keyManager.unregisterKeyListener(this);
 	}
 
 	@AllArgsConstructor
@@ -270,21 +211,38 @@ public class ModelExporter extends Overlay implements MouseListener, MouseWheelL
 	}
 
 	public void exportModel(Object object, Renderable renderable) {
-		exportModels(getTypeAndName(object), resolveModels(renderable), false);
+		exportModel(object, renderable, null, null);
+	}
+
+	public void exportModel(Object object, Renderable renderable, Consumer<String> onExported) {
+		exportModel(object, renderable, onExported, null);
+	}
+
+	public void exportModel(Object object, Renderable renderable, Consumer<String> onExported, Runnable onCompleted) {
+		try {
+			exportModels(getTypeAndName(object), resolveModels(renderable), false, onExported, onCompleted);
+		} catch (RuntimeException | Error ex) {
+			completeExport(onCompleted);
+			throw ex;
+		}
 	}
 
 	public void exportModel(Map.Entry<String, String> objectName, Object object) {
-		exportModels(objectName, resolveModels(object), false);
+		exportModels(objectName, resolveModels(object), false, null, null);
 	}
 
-	private void exportModels(Map.Entry<String, String> objectName, List<ModelInfo> modelInfos, boolean wholeScene) {
+	private void exportModels(Map.Entry<String, String> objectName, List<ModelInfo> modelInfos, boolean wholeScene,
+		Consumer<String> onExported, Runnable onCompleted) {
 		assert client.isClientThread();
-		if (materialManager.uboMaterials == null)
+		if (materialManager.uboMaterials == null) {
+			completeExport(onCompleted);
 			return;
+		}
 
 		SceneContext currentSceneContext = plugin.getSceneContext();
 		if (currentSceneContext == null) {
 			log.debug("Scene context is null");
+			completeExport(onCompleted);
 			return;
 		}
 
@@ -373,6 +331,7 @@ public class ModelExporter extends Overlay implements MouseListener, MouseWheelL
 					.append(" has no model data.")
 					.build())
 				.build());
+			completeExport(onCompleted);
 			return;
 		}
 
@@ -383,6 +342,7 @@ public class ModelExporter extends Overlay implements MouseListener, MouseWheelL
 				.runeLiteFormattedMessage("Cannot export this object for custom UV mapping: select a single model with at most " +
 					HdPlugin.MAX_FACE_COUNT + " faces.")
 				.build());
+			completeExport(onCompleted);
 			return;
 		}
 
@@ -926,6 +886,7 @@ public class ModelExporter extends Overlay implements MouseListener, MouseWheelL
 							.append(Color.RED, "Failed to load texture for material " + material)
 							.build())
 						.build());
+					completeExport(onCompleted);
 					return; // TODO: skip textures which fail to load. Atm it crashes due to null pointers
 				} else {
 					AffineTransform t = new AffineTransform();
@@ -995,6 +956,7 @@ public class ModelExporter extends Overlay implements MouseListener, MouseWheelL
 			var destination = exportPath;
 			int faceCount = totalFaceCount;
 			var snapshot = wholeScene ? SceneGltfExporter.snapshot(plugin.uboGlobal, waterMaterials) : null;
+			String[] exportedFilename = { null };
 			exportThread = new Thread(() -> {
 				try {
 					for (var entry : textureImages.entrySet()) {
@@ -1050,8 +1012,9 @@ public class ModelExporter extends Overlay implements MouseListener, MouseWheelL
 								.append(wholeScene ? "Exported scene as " : "Exported model as ")
 								.append(Color.CYAN, destination.getFilename())
 								.append(" (" + faceCount + " faces)")
-								.build())
+							.build())
 							.build());
+						exportedFilename[0] = destination.getFilename();
 					}
 				} catch (Exception ex) {
 					log.error("Unable to export model or scene", ex);
@@ -1059,6 +1022,16 @@ public class ModelExporter extends Overlay implements MouseListener, MouseWheelL
 						.runeLiteFormattedMessage("Export failed. See the log for details.").build());
 				} finally {
 					release.run();
+					if (onExported != null || onCompleted != null)
+						clientThread.invoke(() -> {
+							try {
+								if (onExported != null && exportedFilename[0] != null)
+									onExported.accept(exportedFilename[0]);
+							} finally {
+								if (onCompleted != null)
+									onCompleted.run();
+							}
+						});
 				}
 			}, "117 HD export " + destination.getFilename());
 			exportThread.setDaemon(true);
@@ -1080,9 +1053,17 @@ public class ModelExporter extends Overlay implements MouseListener, MouseWheelL
 				exportThread.start();
 			} catch (RuntimeException | Error ex) {
 				release.run();
+				completeExport(onCompleted);
 				throw ex;
 			}
+		} else {
+			completeExport(onCompleted);
 		}
+	}
+
+	private void completeExport(Runnable onCompleted) {
+		if (onCompleted != null)
+			onCompleted.run();
 	}
 
 	private void pushVanillaModel(
@@ -1171,17 +1152,6 @@ public class ModelExporter extends Overlay implements MouseListener, MouseWheelL
 				.put(vertexNormalsX[triC]).put(vertexNormalsY[triC]).put(vertexNormalsZ[triC]);
 
 			fillVanillaUvs(uvs, model, face);
-		}
-	}
-
-	// This development-only exporter reads authored material data without widening the production API.
-	private static Object readField(Object object, String name) {
-		try {
-			var field = object.getClass().getDeclaredField(name);
-			field.setAccessible(true);
-			return field.get(object);
-		} catch (ReflectiveOperationException ex) {
-			throw new IllegalStateException("Unable to read " + name, ex);
 		}
 	}
 
@@ -1351,341 +1321,6 @@ public class ModelExporter extends Overlay implements MouseListener, MouseWheelL
 				}
 			}
 		}
-		// The menu is not rebuilt when it is open, so don't swap or else it will
-		// repeatedly swap entries
-		if (client.isMenuOpen() || selectedObject == null)
-			return;
-
-		var object = selectedObject;
-		var name = getTypeAndName(object);
-		client.createMenuEntry(client.getMenuEntries().length)
-			.setOption("Export " + name.getKey())
-			.setTarget("<col=00ffff>" + name.getValue() + "</col>")
-			.setType(MenuAction.RUNELITE_HIGH_PRIORITY)
-			.onClick(e -> clientThread.invoke(() -> exportModel(name, object)));
-	}
-
-	@Subscribe
-	public void onClientTick(ClientTick tick) {
-		if (client.isMenuOpen())
-			return;
-		if (!isExporterShortcutHeld()) {
-			hoverSet.clear();
-			spotAnimActors.clear();
-			selectedObject = null;
-			return;
-		}
-		boolean refresh = clientTickCount++ % 5 == 0;
-		if (refresh)
-			updateHoverSet();
-		if (!refresh && selectedIndex == lastSelectedIndex)
-			return;
-
-		if (hoverSet.isEmpty()) {
-			selectedObject = null;
-			return;
-		}
-
-		int camX = client.getCameraX();
-		int camY = client.getCameraY();
-		int camZ = client.getCameraZ(); // up
-
-		selectedIndex = clamp(selectedIndex, 0, Math.max(0, hoverSet.size() - 1));
-		lastSelectedIndex = selectedIndex;
-		selectedObject = hoverSet.stream()
-			.map(e -> {
-				int x = 0, y = 0, z = 0;
-				if (e instanceof Actor || e instanceof ActorSpotAnim) {
-					var a = e instanceof Actor ? (Actor) e : spotAnimActors.get(e);
-					var lp = a.getLocalLocation();
-					x = lp.getX();
-					y = lp.getY();
-
-					if (a instanceof NPC) {
-						int size = client.getNpcDefinition(((NPC) a).getId()).getSize();
-						var tileHeightPoint = new LocalPoint(
-							size * LOCAL_HALF_TILE_SIZE - LOCAL_HALF_TILE_SIZE + x,
-							size * LOCAL_HALF_TILE_SIZE - LOCAL_HALF_TILE_SIZE + y
-						);
-						z = getTileHeight(client, tileHeightPoint, client.getPlane());
-					} else if (a instanceof Player) {
-						z = getTileHeight(client, lp, client.getPlane());
-					}
-					if (e instanceof ActorSpotAnim)
-						z += a.getAnimationHeightOffset() - ((ActorSpotAnim) e).getHeight();
-				} else if (e instanceof TileObject) {
-					var o = (TileObject) e;
-					x = o.getX();
-					y = o.getY();
-					z = o.getZ();
-				} else if (e instanceof GraphicsObject) {
-					var g = (GraphicsObject) e;
-					LocalPoint lp = g.getLocation();
-					x = lp.getX();
-					y = lp.getY();
-					z = g.getZ();
-				} else if (e instanceof Projectile) {
-					var p = (Projectile) e;
-					x = (int) p.getX();
-					y = (int) p.getY();
-					z = (int) p.getZ();
-				}
-				x -= camX;
-				y -= camY;
-				z -= camZ;
-				long dist = (long) x * x + (long) y * y + (long) z * z;
-				return Map.entry(dist, e);
-			})
-			.sorted(Comparator.comparingLong(Map.Entry::getKey))
-			.skip(selectedIndex)
-			.map(Map.Entry::getValue)
-			.findFirst()
-			.orElse(null);
-	}
-
-	@Override
-	public Dimension render(Graphics2D g) {
-		if (selectedObject != null) {
-			if (selectedObject instanceof NPC) {
-				modelOutlineRenderer.drawOutline((NPC) selectedObject, OUTLINE_WIDTH, OUTLINE_COLOR, OUTLINE_FEATHER);
-			} else if (selectedObject instanceof Player) {
-				modelOutlineRenderer.drawOutline((Player) selectedObject, OUTLINE_WIDTH, OUTLINE_COLOR, OUTLINE_FEATHER);
-			} else if (selectedObject instanceof TileObject) {
-				modelOutlineRenderer.drawOutline((TileObject) selectedObject, OUTLINE_WIDTH, OUTLINE_COLOR, OUTLINE_FEATHER);
-			} else if (selectedObject instanceof GraphicsObject) {
-				modelOutlineRenderer.drawOutline((GraphicsObject) selectedObject, OUTLINE_WIDTH, OUTLINE_COLOR, OUTLINE_FEATHER);
-			} else if (selectedObject instanceof Projectile || selectedObject instanceof ActorSpotAnim) {
-				Shape shape = selectedObject instanceof Projectile ? getConvexHull((Projectile) selectedObject) :
-					getConvexHull((ActorSpotAnim) selectedObject);
-				if (shape != null) {
-					g.setColor(OUTLINE_COLOR);
-					g.setStroke(new BasicStroke(OUTLINE_WIDTH));
-					g.draw(shape);
-				}
-			}
-			int faceCount = 0;
-			for (var renderable : resolveRenderables(selectedObject)) {
-				if (renderable == null)
-					continue;
-				var model = renderable instanceof Model ? (Model) renderable : renderable.getModel();
-				if (model != null)
-					faceCount += model.getFaceCount();
-			}
-			var mouse = client.getMouseCanvasPosition();
-			String label = "Faces: " + faceCount;
-			g.setColor(Color.BLACK);
-			g.drawString(label, mouse.getX() + 17, mouse.getY() + 21);
-			g.setColor(Color.WHITE);
-			g.drawString(label, mouse.getX() + 16, mouse.getY() + 20);
-		}
-		return null;
-	}
-
-	private void updateHoverSet() {
-		hoverSet.clear();
-		spotAnimActors.clear();
-		hoverChecked.clear();
-
-		if (!isExporterShortcutHeld())
-			return;
-
-		Point canvasPoint = client.getMouseCanvasPosition();
-		if (canvasPoint.getX() == -1 && canvasPoint.getY() == -1)
-			return;
-		Point2D hoverPoint = new Point2D.Float(canvasPoint.getX(), canvasPoint.getY());
-
-		Scene scene = client.getScene();
-		Tile[][][] tiles = scene.getTiles();
-		var context = sceneManager.getContext(scene);
-		boolean useZoneBounds = context != null && context.sceneContext != null && context.sceneContext.scene == scene;
-		float[] rayOrigin = { 2f * (canvasPoint.getX() - client.getViewportXOffset()) / client.getViewportWidth() - 1,
-			1 - 2f * (canvasPoint.getY() - client.getViewportYOffset()) / client.getViewportHeight(), 1, 1 };
-		float[] rayDirection = { rayOrigin[0], rayOrigin[1], .5f, 1 };
-		Mat4.mulVec(rayOrigin, plugin.invViewProjMatrix, rayOrigin);
-		Mat4.mulVec(rayDirection, plugin.invViewProjMatrix, rayDirection);
-		for (int i = 0; i < 3; i++) {
-			rayOrigin[i] /= rayOrigin[3];
-			rayDirection[i] = rayDirection[i] / rayDirection[3] - rayOrigin[i];
-		}
-		float[] bounds = new float[6];
-		// Cache across planes; zone bounds include all planes and objects extending beyond their tiles.
-		byte[][] hoveredZones = new byte[(tiles[0].length + 7) >> 3][(tiles[0][0].length + 7) >> 3];
-		for (int plane = tiles.length - 1; plane >= 0; plane--) {
-			Tile[][] tilePlane = tiles[plane];
-			for (int x = 0; x < tilePlane.length; x += 8) {
-				for (int z = 0; z < tilePlane[x].length; z += 8) {
-					if (useZoneBounds) {
-						int zx = (x + context.sceneContext.sceneOffset) >> 3;
-						int zz = (z + context.sceneContext.sceneOffset) >> 3;
-						if (hoveredZones[x >> 3][z >> 3] == 0) {
-							var zones = (rs117.hd.renderer.zone.Zone[][]) readField(context, "zones");
-							var zone = zones[zx][zz];
-							int zoneX = (zx * 8 - context.sceneContext.sceneOffset) * LOCAL_TILE_SIZE;
-							int zoneZ = (zz * 8 - context.sceneContext.sceneOffset) * LOCAL_TILE_SIZE;
-							bounds[0] = zoneX + (int) readField(zone, "minX");
-							bounds[1] = (int) readField(zone, "minY");
-							bounds[2] = zoneZ + (int) readField(zone, "minZ");
-							bounds[3] = zoneX + (int) readField(zone, "maxX");
-							bounds[4] = (int) readField(zone, "maxY");
-							bounds[5] = zoneZ + (int) readField(zone, "maxZ");
-							boolean hovered = !zone.initialized || (int) readField(zone, "minY") > (int) readField(zone, "maxY") || rayIntersectsBounds(rayOrigin, rayDirection, bounds);
-							hoveredZones[x >> 3][z >> 3] = (byte) (hovered ? 1 : -1);
-						}
-						if (hoveredZones[x >> 3][z >> 3] < 0)
-							continue;
-					}
-					for (int tx = x; tx < Math.min(x + 8, tilePlane.length); tx++) {
-						for (int tz = z; tz < Math.min(z + 8, tilePlane[tx].length); tz++) {
-							Tile tile = tilePlane[tx][tz];
-							if (tile != null)
-								processTile(hoverPoint, tile);
-						}
-					}
-				}
-			}
-		}
-
-		for (var npc : client.getNpcs())
-			addIfHovered(hoverPoint, npc);
-		for (var player : client.getPlayers())
-			addIfHovered(hoverPoint, player);
-		for (var object : client.getGraphicsObjects())
-			addIfHovered(hoverPoint, object);
-		for (var projectile : client.getProjectiles())
-			addIfHovered(hoverPoint, projectile);
-		hoverChecked.clear();
-	}
-
-	private static boolean rayIntersectsBounds(float[] origin, float[] direction, float[] bounds) {
-		float near = 0;
-		float far = Float.POSITIVE_INFINITY;
-		for (int i = 0; i < 3; i++) {
-			if (direction[i] == 0) {
-				if (origin[i] < bounds[i] || origin[i] > bounds[i + 3])
-					return false;
-			} else {
-				float a = (bounds[i] - origin[i]) / direction[i];
-				float b = (bounds[i + 3] - origin[i]) / direction[i];
-				near = Math.max(near, Math.min(a, b));
-				far = Math.min(far, Math.max(a, b));
-				if (near > far)
-					return false;
-			}
-		}
-		return true;
-	}
-
-	private void processTile(Point2D hoverPoint, Tile tile) {
-		var bridge = tile.getBridge();
-		if (bridge != null)
-			processTile(hoverPoint, bridge);
-
-		for (GameObject gameObject : tile.getGameObjects())
-			if (gameObject != null)
-				addIfHovered(hoverPoint, gameObject);
-
-		WallObject wallObject = tile.getWallObject();
-		if (wallObject != null)
-			addIfHovered(hoverPoint, wallObject);
-
-		DecorativeObject decorativeObject = tile.getDecorativeObject();
-		if (decorativeObject != null)
-			addIfHovered(hoverPoint, decorativeObject);
-
-		GroundObject groundObject = tile.getGroundObject();
-		if (groundObject != null)
-			addIfHovered(hoverPoint, groundObject);
-	}
-
-	private void addIfHovered(Point2D hoverPoint, Object object) {
-		// Multi-tile objects and bridged tiles may encounter the same object repeatedly.
-		if (!hoverChecked.add(object))
-			return;
-		Shape shape = null;
-		if (object instanceof Actor) {
-			var actor = (Actor) object;
-			shape = actor.getConvexHull();
-			for (var spotAnim : actor.getSpotAnims()) {
-				if (spotAnim.getFrame() < 0 || client.getGameCycle() < spotAnim.getStartCycle())
-					continue;
-				spotAnimActors.put(spotAnim, actor);
-				addIfHovered(hoverPoint, spotAnim);
-			}
-		} else if (object instanceof ActorSpotAnim) {
-			shape = getConvexHull((ActorSpotAnim) object);
-		} else if (object instanceof TileObject) {
-			shape = ((TileObject) object).getClickbox();
-		} else if (object instanceof GraphicsObject) {
-			shape = getConvexHull((GraphicsObject) object);
-		} else if (object instanceof Projectile) {
-			shape = getConvexHull((Projectile) object);
-		}
-
-		if (shape != null && shape.contains(hoverPoint))
-			hoverSet.add(object);
-	}
-
-	private Shape getConvexHull(ActorSpotAnim spotAnim) {
-		var actor = spotAnimActors.get(spotAnim);
-		var model = spotAnim.getModel();
-		if (actor == null || model == null)
-			return null;
-		var location = actor.getLocalLocation();
-		int height = getTileHeight(client, location, actor.getWorldView().getPlane()) +
-			actor.getAnimationHeightOffset() - spotAnim.getHeight();
-		int[] x2d = new int[model.getVerticesCount()];
-		int[] y2d = new int[model.getVerticesCount()];
-		Perspective.modelToCanvas(client, model.getVerticesCount(), location.getX(), location.getY(), height, 0,
-			model.getVerticesX(), model.getVerticesZ(), model.getVerticesY(), x2d, y2d);
-		return Jarvis.convexHull(x2d, y2d);
-	}
-
-	private Shape getConvexHull(GraphicsObject o) {
-		var model = o.getModel();
-		if (model == null)
-			return null;
-		int[] x2d = new int[model.getVerticesCount()];
-		int[] y2d = new int[model.getVerticesCount()];
-
-		Perspective.modelToCanvas(
-			client,
-			model.getVerticesCount(),
-			o.getLocation().getX(),
-			o.getLocation().getY(),
-			o.getZ(),
-			0,
-			model.getVerticesX(),
-			model.getVerticesZ(),
-			model.getVerticesY(),
-			x2d,
-			y2d
-		);
-
-		return Jarvis.convexHull(x2d, y2d);
-	}
-
-	private Shape getConvexHull(Projectile p) {
-		var model = p.getModel();
-		if (model == null)
-			return null;
-		int[] x2d = new int[model.getVerticesCount()];
-		int[] y2d = new int[model.getVerticesCount()];
-
-		Perspective.modelToCanvas(
-			client,
-			model.getVerticesCount(),
-			(int) p.getX(),
-			(int) p.getY(),
-			(int) p.getZ(),
-			0,
-			model.getVerticesX(),
-			model.getVerticesZ(),
-			model.getVerticesY(),
-			x2d,
-			y2d
-		);
-
-		return Jarvis.convexHull(x2d, y2d);
 	}
 
 	private long getHash(Object object) {
@@ -1864,7 +1499,7 @@ public class ModelExporter extends Overlay implements MouseListener, MouseWheelL
 		try {
 			if (terrain.faceCount() > 0)
 				models.add(terrain);
-			exportModels(Map.entry("scene", Integer.toString(client.getTickCount())), models, true);
+			exportModels(Map.entry("scene", Integer.toString(client.getTickCount())), models, true, null, null);
 		} finally {
 			terrain.terrain.destroy();
 			terrain.terrain.staticUnorderedModelBuffer.destroy();
@@ -1982,79 +1617,6 @@ public class ModelExporter extends Overlay implements MouseListener, MouseWheelL
 			.a1(matrix[0]).a2(matrix[4]).a3(matrix[8]).a4(matrix[12])
 			.b1(matrix[1]).b2(matrix[5]).b3(matrix[9]).b4(matrix[13])
 			.c1(matrix[2]).c2(matrix[6]).c3(matrix[10]).c4(matrix[14]).d4(1);
-	}
-
-	@Override
-	public MouseEvent mouseClicked(MouseEvent event) {
-		return event;
-	}
-
-	@Override
-	public MouseEvent mousePressed(MouseEvent event) {
-		return event;
-	}
-
-	@Override
-	public MouseEvent mouseReleased(MouseEvent event) {
-		return event;
-	}
-
-	@Override
-	public MouseEvent mouseEntered(MouseEvent event) {
-		return event;
-	}
-
-	@Override
-	public MouseEvent mouseExited(MouseEvent event) {
-		return event;
-	}
-
-	@Override
-	public MouseEvent mouseDragged(MouseEvent event) {
-		return event;
-	}
-
-	@Override
-	public MouseEvent mouseMoved(MouseEvent event) {
-		return event;
-	}
-
-	@Override
-	public MouseWheelEvent mouseWheelMoved(MouseWheelEvent event) {
-		if (isExporterShortcutHeld()) {
-			selectedIndex -= Math.signum(event.getWheelRotation());
-			event.consume();
-		}
-		return event;
-	}
-
-	@Override
-	public void keyTyped(KeyEvent event) {}
-
-	@Override
-	public void keyPressed(KeyEvent event) {
-		if (!isExporterShortcutHeld())
-			return;
-
-		switch (event.getKeyCode()) {
-			case KeyEvent.VK_LEFT:
-			case KeyEvent.VK_DOWN:
-				selectedIndex--;
-				event.consume();
-				break;
-			case KeyEvent.VK_RIGHT:
-			case KeyEvent.VK_UP:
-				selectedIndex++;
-				event.consume();
-				break;
-		}
-	}
-
-	@Override
-	public void keyReleased(KeyEvent event) {}
-
-	private boolean isExporterShortcutHeld() {
-		return client.isKeyPressed(KeyCode.KC_CONTROL) && client.isKeyPressed(KeyCode.KC_SHIFT);
 	}
 
 	private static <T> ArrayList<T> list(T... elements) {

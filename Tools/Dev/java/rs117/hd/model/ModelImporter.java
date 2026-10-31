@@ -9,7 +9,6 @@ import net.runelite.client.eventbus.Subscribe;
 import net.runelite.client.events.PluginChanged;
 import com.google.gson.JsonElement;
 import com.google.gson.JsonObject;
-import java.awt.event.KeyEvent;
 import java.io.IOException;
 import java.math.BigDecimal;
 import java.math.RoundingMode;
@@ -25,12 +24,10 @@ import java.util.concurrent.ScheduledExecutorService;
 import java.util.concurrent.ScheduledFuture;
 import java.util.concurrent.TimeUnit;
 import java.util.regex.Pattern;
+import javax.annotation.Nullable;
 import javax.inject.Inject;
 import lombok.extern.slf4j.Slf4j;
 import net.runelite.client.callback.ClientThread;
-import net.runelite.client.config.Keybind;
-import net.runelite.client.input.KeyListener;
-import net.runelite.client.input.KeyManager;
 import org.lwjgl.assimp.AIMaterial;
 import org.lwjgl.assimp.AIMesh;
 import org.lwjgl.assimp.AIString;
@@ -39,11 +36,10 @@ import rs117.hd.HdPlugin;
 import rs117.hd.scene.MaterialManager;
 import rs117.hd.scene.ModelOverrideManager;
 import rs117.hd.utils.FileWatcher;
+import rs117.hd.utils.GsonUtils;
 import rs117.hd.utils.Props;
 import rs117.hd.utils.ResourcePath;
 
-import static java.awt.event.InputEvent.ALT_DOWN_MASK;
-import static java.awt.event.InputEvent.CTRL_DOWN_MASK;
 import static org.lwjgl.assimp.Assimp.AI_MATKEY_NAME;
 import static org.lwjgl.assimp.Assimp.aiGetErrorString;
 import static org.lwjgl.assimp.Assimp.aiGetMaterialString;
@@ -55,8 +51,7 @@ import static rs117.hd.utils.ResourcePath.path;
 
 /** Imports editable UV0 and materials, using immutable UV1 corner IDs for custom models. */
 @Slf4j
-public class ModelImporter implements KeyListener {
-	private static final Keybind BAKE = new Keybind(KeyEvent.VK_ENTER, CTRL_DOWN_MASK | ALT_DOWN_MASK);
+public class ModelImporter {
 	// Consume whole strings and comments so embedded property names cannot match.
 	private static final Pattern JSON_TOKEN = Pattern.compile(
 		"\"(?:\\\\.|[^\"\\\\])*\"|//[^\\r\\n]*|/\\*[\\s\\S]*?\\*/|[{}\\[\\],:]|true|false|null|-?\\d+(?:\\.\\d+)?(?:[eE][+-]?\\d+)?");
@@ -66,9 +61,6 @@ public class ModelImporter implements KeyListener {
 
 	@Inject
 	private ModelOverrideManager overrides;
-
-	@Inject
-	private KeyManager keys;
 
 	@Inject
 	private ClientThread clientThread;
@@ -84,14 +76,12 @@ public class ModelImporter implements KeyListener {
 	private FileWatcher.UnregisterCallback modelExportsWatcher;
 	private ScheduledFuture<?> debounce;
 	private long reloadRevision;
-	private boolean pressed;
 	private boolean closed;
 
 	public void startup() {
 		source = Props.getFile("rlhd.model-overrides-path", () -> path(ModelOverrideManager.class, "model_overrides.json"));
 		eventBus.register(this);
 		installAdapter();
-		keys.registerKeyListener(this);
 		try {
 			modelExportsWatcher = FileWatcher.watchPath(
 					MODEL_EXPORTS.mkdirs(),
@@ -125,7 +115,6 @@ public class ModelImporter implements KeyListener {
 		if (modelExportsWatcher != null)
 			modelExportsWatcher.unregister();
 		modelExportsWatcher = null;
-		keys.unregisterKeyListener(this);
 		eventBus.unregister(this);
 		if (installedGson != null && plugin.getGson() == installedGson)
 			setGson(originalGson);
@@ -167,9 +156,23 @@ public class ModelImporter implements KeyListener {
 	private void reloadOverrides() {
 		if (!plugin.isActive())
 			return;
-		overrides.reload();
-		plugin.renderer.clearCaches();
-		plugin.renderer.reloadScene();
+
+		ModelOverride[] definitions = overrides.getModelOverrideDefinitions().toArray(ModelOverride[]::new);
+		if (definitions.length == 0 || originalGson == null) {
+			overrides.reload();
+		} else {
+			overrides.loadModelOverrides(prepareDefinitionsForLoad(definitions), true);
+		}
+	}
+
+	public ModelOverride[] prepareDefinitionsForLoad(ModelOverride[] definitions) {
+		if (originalGson == null)
+			return definitions;
+
+		JsonElement json = originalGson.toJsonTree(definitions);
+		resolve(json);
+		GsonUtils.removeNulls(json);
+		return originalGson.fromJson(json, ModelOverride[].class);
 	}
 
 	private int resolve(JsonElement json) {
@@ -185,7 +188,7 @@ public class ModelImporter implements KeyListener {
 			if (custom != null && custom.isJsonPrimitive() && custom.getAsJsonPrimitive().isString()) {
 				var path = MODEL_EXPORTS.toPath().resolve(custom.getAsString()).normalize();
 				var material = object.has("material") ? object.get("material") : object.get("baseMaterial");
-				var imported = loadCustom(path, material == null ? "NONE" : material.getAsString());
+				var imported = loadCustom(path, materialName(material));
 				for (var entry : imported.getAsJsonObject("custom").entrySet())
 					object.add(entry.getKey(), entry.getValue());
 				object.remove("baseMaterial");
@@ -207,6 +210,19 @@ public class ModelImporter implements KeyListener {
 					count += resolve(entry.getValue());
 		}
 		return count;
+	}
+
+	private static String materialName(@Nullable JsonElement material) {
+		if (material == null || material.isJsonNull())
+			return "NONE";
+		if (material.isJsonPrimitive() && material.getAsJsonPrimitive().isString())
+			return material.getAsString();
+		if (material.isJsonObject()) {
+			var name = material.getAsJsonObject().get("name");
+			if (name != null && name.isJsonPrimitive() && name.getAsJsonPrimitive().isString())
+				return name.getAsString();
+		}
+		throw new IllegalArgumentException("Expected a material name or object with a string name, got: " + material);
 	}
 
 	static JsonObject loadCustom(Path path, String baseMaterial) {
@@ -365,16 +381,23 @@ public class ModelImporter implements KeyListener {
 		}
 	}
 
-	private void bake() {
+	public void bakeModel(String modelPath, Runnable onBaked) {
+		bake(modelPath, onBaked);
+	}
+
+	private void bake(String modelPath, Runnable onBaked) {
 		if (closed || source == null)
 			return;
 		try {
 			Path path = source.toPath().toAbsolutePath();
 			String original = Files.readString(path);
 			var replacements = new ArrayList<String>();
-			String updated = replacePaths(original, replacements);
-			if (replacements.isEmpty())
+			String updated = replacePaths(original, replacements, modelPath);
+			if (replacements.isEmpty()) {
+				if (modelPath != null)
+					log.warn("No import paths found for model '{}' in {}", modelPath, path);
 				return;
+			}
 			Path temporary = Files.createTempFile(path.getParent(), "model-uvs-", ".json");
 			try {
 				Files.writeString(temporary, updated, StandardCharsets.UTF_8);
@@ -389,8 +412,22 @@ public class ModelImporter implements KeyListener {
 			} finally {
 				Files.deleteIfExists(temporary);
 			}
+			reloadBakedOverrides();
+			if (onBaked != null)
+				onBaked.run();
 		} catch (Exception ex) {
 			log.error("Unable to bake model UVs; overrides were not replaced", ex);
+		}
+	}
+
+	private void reloadBakedOverrides() {
+		try {
+			ModelOverride[] definitions = source.loadJson(plugin.getGson(), ModelOverride[].class);
+			if (definitions == null)
+				throw new IOException("Empty or invalid: " + source);
+			overrides.loadModelOverrides(definitions, true);
+		} catch (Exception ex) {
+			log.error("Unable to reload baked model overrides", ex);
 		}
 	}
 
@@ -415,7 +452,7 @@ public class ModelImporter implements KeyListener {
 		}
 	}
 
-	private String replacePaths(String original, ArrayList<String> reports) {
+	private String replacePaths(String original, ArrayList<String> reports, String targetModelPath) {
 		// Validate JSON, but edit only the imported values, preserving all unrelated formatting.
 		plugin.getGson().fromJson(original, JsonElement.class);
 		var objects = new ArrayDeque<ObjectSpan>();
@@ -443,7 +480,7 @@ public class ModelImporter implements KeyListener {
 				var object = objects.pop();
 				if (object.uvLocation != null)
 					reports.add("Replaced UV path for '" + object.description + "' " + object.uvLocation);
-				if (object.customPath != null) {
+				if (object.customPath != null && matchesModelPath(targetModelPath, object.customPath)) {
 					var imported = loadCustom(MODEL_EXPORTS.toPath().resolve(object.customPath).normalize(), object.baseMaterial);
 					int lineStart = original.lastIndexOf('\n', object.customStart - 1) + 1;
 					int indentEnd = lineStart;
@@ -489,9 +526,11 @@ public class ModelImporter implements KeyListener {
 						object.customEnd = tokens.end();
 						object.customLine = line;
 					} else if ("uvs".equals(property)) {
-						var uvs = loadUvs(MODEL_EXPORTS.toPath().resolve(value).normalize());
-						edits.add(new Replacement(tokens.start(), tokens.end(), format(uvs, "", newline)));
-						object.uvLocation = "from '" + value + "' at line " + line;
+						if (matchesModelPath(targetModelPath, object.customPath)) {
+							var uvs = loadUvs(MODEL_EXPORTS.toPath().resolve(value).normalize());
+							edits.add(new Replacement(tokens.start(), tokens.end(), format(uvs, "", newline)));
+							object.uvLocation = "from '" + value + "' at line " + line;
+						}
 					}
 				}
 				previousString = value;
@@ -509,6 +548,15 @@ public class ModelImporter implements KeyListener {
 			copied = edit.end;
 		}
 		return result.append(original, copied, original.length()).toString();
+	}
+
+	private static boolean matchesModelPath(String target, String candidate) {
+		if (target == null)
+			return true;
+		if (candidate == null)
+			return false;
+		return Path.of(target.replace('\\', '/')).normalize()
+			.equals(Path.of(candidate.replace('\\', '/')).normalize());
 	}
 
 	private String format(JsonElement json, String indent, String newline) {
@@ -545,23 +593,4 @@ public class ModelImporter implements KeyListener {
 		return result.append(json.isJsonArray() ? "]" : "}").toString();
 	}
 
-	@Override
-	public void keyPressed(KeyEvent event) {
-		if (BAKE.matches(event)) {
-			event.consume();
-			if (!pressed) {
-				pressed = true;
-				clientThread.invokeLater(this::bake);
-			}
-		}
-	}
-
-	@Override
-	public void keyReleased(KeyEvent event) {
-		if (event.getKeyCode() == KeyEvent.VK_ENTER)
-			pressed = false;
-	}
-
-	@Override
-	public void keyTyped(KeyEvent event) {}
 }
