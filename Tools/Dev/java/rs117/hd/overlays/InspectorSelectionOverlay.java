@@ -35,6 +35,7 @@ import static net.runelite.api.Perspective.getCanvasTileAreaPoly;
 @Singleton
 public final class InspectorSelectionOverlay extends Overlay {
 	private static final Color OUTLINE_COLOR = new Color(0xFFFF00FF, true);
+	private static final Color FACE_PREVIEW_COLOR = new Color(0xFFFFFF00, true);
 	private static final Color TILE_FILL = new Color(255, 190, 50, 48);
 	private static final Color TILE_OUTLINE = new Color(255, 190, 50, 230);
 	private static final int OUTLINE_WIDTH = 4;
@@ -72,6 +73,7 @@ public final class InspectorSelectionOverlay extends Overlay {
 	private volatile Object selectedObject;
 	private volatile Tile selectedTile;
 	private volatile List<Hit> hoverCandidates = Collections.emptyList();
+	private volatile List<Shape> previewShapes = Collections.emptyList();
 	private volatile int hoveredCandidateIndex;
 
 	@Inject
@@ -82,7 +84,6 @@ public final class InspectorSelectionOverlay extends Overlay {
 	}
 
 	public void startUp() {
-		drawCallbacksRedirector.install();
 		eventBus.register(this);
 	}
 
@@ -91,25 +92,29 @@ public final class InspectorSelectionOverlay extends Overlay {
 		hoveredObject = null;
 		hoveredTile = null;
 		hoverCandidates = Collections.emptyList();
+		previewShapes = Collections.emptyList();
 		selectedObject = null;
 		selectedTile = null;
 		sceneGeometry.reset();
 		setActive(false);
-		drawCallbacksRedirector.uninstall();
 		eventBus.unregister(this);
 	}
 
 	public void setSelectionMode(boolean enabled) {
 		selectionMode = enabled;
 		if (enabled) {
+			drawCallbacksRedirector.install();
+			previewShapes = Collections.emptyList();
 			selectedObject = null;
 			selectedTile = null;
 			hoveredObject = null;
 			hoveredTile = null;
 			hoverCandidates = Collections.emptyList();
 			hoveredCandidateIndex = 0;
+		} else {
+			drawCallbacksRedirector.uninstall();
 		}
-		setActive(enabled || selectedObject != null || selectedTile != null);
+		setActive(enabled || selectedObject != null || selectedTile != null || !previewShapes.isEmpty());
 	}
 
 	public void clearSelection() {
@@ -119,8 +124,22 @@ public final class InspectorSelectionOverlay extends Overlay {
 		hoveredObject = null;
 		hoveredTile = null;
 		hoverCandidates = Collections.emptyList();
+		previewShapes = Collections.emptyList();
 		hoveredCandidateIndex = 0;
 		setActive(false);
+	}
+
+	public void setPreviewShapes(List<Shape> shapes) {
+		previewShapes = shapes == null || shapes.isEmpty()
+			? Collections.emptyList() : List.copyOf(shapes);
+		setActive(selectionMode || selectedObject != null || selectedTile != null || !previewShapes.isEmpty());
+	}
+
+	public void clearPreviewShapes() {
+		if (previewShapes.isEmpty())
+			return;
+		previewShapes = Collections.emptyList();
+		setActive(selectionMode || selectedObject != null || selectedTile != null);
 	}
 
 	public void setSelectionModes(boolean modelEnabled, boolean tileEnabled) {
@@ -129,7 +148,7 @@ public final class InspectorSelectionOverlay extends Overlay {
 		if (!isSelectionAllowed(selectedObject)) selectedObject = null;
 		if (!isSelectionAllowed(selectedTile)) selectedTile = null;
 		if (selectionMode) setActive(true);
-		else setActive(selectedObject != null || selectedTile != null);
+		else setActive(selectedObject != null || selectedTile != null || !previewShapes.isEmpty());
 	}
 
 	public void updateHoverNow() {
@@ -141,7 +160,7 @@ public final class InspectorSelectionOverlay extends Overlay {
 		selectedObject = selected instanceof Tile ? null : selected;
 		selectedTile = selected instanceof Tile ? (Tile) selected : null;
 		selectionMode = false;
-		setActive(selected != null);
+		setActive(selected != null || !previewShapes.isEmpty());
 		return selected;
 	}
 
@@ -159,7 +178,7 @@ public final class InspectorSelectionOverlay extends Overlay {
 		Object candidate = getHoveredCandidateObject();
 		selectedObject = candidate instanceof Tile ? null : candidate;
 		selectedTile = candidate instanceof Tile ? (Tile) candidate : null;
-		setActive(candidate != null);
+		setActive(candidate != null || !previewShapes.isEmpty());
 	}
 
 	private Object getHoveredCandidateObject() {
@@ -171,14 +190,14 @@ public final class InspectorSelectionOverlay extends Overlay {
 		selectedObject = object;
 		selectedTile = null;
 		selectionMode = false;
-		setActive(object != null);
+		setActive(object != null || !previewShapes.isEmpty());
 	}
 
 	public void setSelectedTile(Tile tile) {
 		selectedObject = null;
 		selectedTile = tile;
 		selectionMode = false;
-		setActive(tile != null);
+		setActive(tile != null || !previewShapes.isEmpty());
 	}
 
 	private void setActive(boolean enabled) {
@@ -232,13 +251,25 @@ public final class InspectorSelectionOverlay extends Overlay {
 
 	@Override
 	public Dimension render(Graphics2D graphics) {
+		List<Shape> faces = previewShapes;
+		if (!faces.isEmpty()) {
+			graphics.setColor(FACE_PREVIEW_COLOR);
+			graphics.setStroke(new BasicStroke(3));
+			for (Shape face : faces)
+				graphics.draw(face);
+		}
+
 		Object object = selectionMode ? hoveredObject : selectedObject;
 		if (object instanceof Actor) modelOutlineRenderer.drawOutline((Actor) object, OUTLINE_WIDTH, OUTLINE_COLOR, OUTLINE_FEATHER);
 		else if (object instanceof TileObject) modelOutlineRenderer.drawOutline((TileObject) object, OUTLINE_WIDTH, OUTLINE_COLOR, OUTLINE_FEATHER);
 		else if (object instanceof GraphicsObject) modelOutlineRenderer.drawOutline((GraphicsObject) object, OUTLINE_WIDTH, OUTLINE_COLOR, OUTLINE_FEATHER);
 		else if (object instanceof Projectile) {
 			Shape shape = sceneGeometry.getConvexHull((Projectile) object);
-			if (shape != null) { graphics.setColor(OUTLINE_COLOR); graphics.setStroke(new BasicStroke(OUTLINE_WIDTH)); graphics.draw(shape); }
+			if (shape != null) {
+				graphics.setColor(OUTLINE_COLOR);
+				graphics.setStroke(new BasicStroke(OUTLINE_WIDTH));
+				graphics.draw(shape);
+			}
 		} else if (selectionMode) {
 			drawTileHighlight(graphics, hoveredTile);
 		} else if (selectedTile != null) {

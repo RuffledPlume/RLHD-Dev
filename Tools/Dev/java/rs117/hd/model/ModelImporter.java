@@ -9,9 +9,12 @@ import net.runelite.client.eventbus.Subscribe;
 import net.runelite.client.events.PluginChanged;
 import com.google.gson.JsonElement;
 import com.google.gson.JsonObject;
+import com.google.gson.JsonParser;
 import java.io.IOException;
 import java.math.BigDecimal;
 import java.math.RoundingMode;
+import java.nio.ByteBuffer;
+import java.nio.ByteOrder;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
@@ -28,6 +31,7 @@ import javax.annotation.Nullable;
 import javax.inject.Inject;
 import lombok.extern.slf4j.Slf4j;
 import net.runelite.client.callback.ClientThread;
+import org.lwjgl.assimp.AIColor4D;
 import org.lwjgl.assimp.AIMaterial;
 import org.lwjgl.assimp.AIMesh;
 import org.lwjgl.assimp.AIString;
@@ -35,12 +39,14 @@ import org.lwjgl.system.MemoryStack;
 import rs117.hd.HdPlugin;
 import rs117.hd.scene.MaterialManager;
 import rs117.hd.scene.ModelOverrideManager;
+import rs117.hd.utils.ColorUtils;
 import rs117.hd.utils.FileWatcher;
 import rs117.hd.utils.GsonUtils;
 import rs117.hd.utils.Props;
 import rs117.hd.utils.ResourcePath;
 
 import static org.lwjgl.assimp.Assimp.AI_MATKEY_NAME;
+import static org.lwjgl.assimp.Assimp.AI_MAX_NUMBER_OF_COLOR_SETS;
 import static org.lwjgl.assimp.Assimp.aiGetErrorString;
 import static org.lwjgl.assimp.Assimp.aiGetMaterialString;
 import static org.lwjgl.assimp.Assimp.aiImportFile;
@@ -188,7 +194,7 @@ public class ModelImporter {
 			if (custom != null && custom.isJsonPrimitive() && custom.getAsJsonPrimitive().isString()) {
 				var path = MODEL_EXPORTS.toPath().resolve(custom.getAsString()).normalize();
 				var material = object.has("material") ? object.get("material") : object.get("baseMaterial");
-				var imported = loadCustom(path, materialName(material));
+				var imported = loadCustom(path, materialName(material), false);
 				for (var entry : imported.getAsJsonObject("custom").entrySet())
 					object.add(entry.getKey(), entry.getValue());
 				object.remove("baseMaterial");
@@ -212,6 +218,208 @@ public class ModelImporter {
 		return count;
 	}
 
+	public int[] loadVertexColors(String modelPath) {
+		Path path = MODEL_EXPORTS.toPath().resolve(modelPath).normalize();
+		try {
+			int[] customColors = loadGlbColorAttribute(path);
+			if (customColors != null)
+				return customColors;
+		} catch (IOException ex) {
+			throw new IllegalArgumentException("Unable to read _COLOR from " + path, ex);
+		}
+		JsonArray colors = loadCustom(path, "NONE", true).getAsJsonObject("custom").getAsJsonArray("vertexColors");
+		int[] values = new int[colors.size()];
+		for (int i = 0; i < values.length; i++)
+			values[i] = colors.get(i).getAsInt();
+		return values;
+	}
+
+	@Nullable
+	private static int[] loadGlbColorAttribute(Path path) throws IOException {
+		byte[] data = Files.readAllBytes(path);
+		if (data.length < 12 || data[0] != 'g' || data[1] != 'l' || data[2] != 'T' || data[3] != 'F')
+			return null;
+
+		ByteBuffer glb = ByteBuffer.wrap(data).order(ByteOrder.LITTLE_ENDIAN);
+		if (glb.getInt(4) != 2)
+			return null;
+		final int JSON_CHUNK = 0x4E4F534A;
+		final int BIN_CHUNK = 0x004E4942;
+		JsonObject root = null;
+		ByteBuffer binary = null;
+		for (int offset = 12; offset + 8 <= data.length;) {
+			int length = glb.getInt(offset);
+			int type = glb.getInt(offset + 4);
+			offset += 8;
+			if (length < 0 || offset + length > data.length)
+				throw new IOException("Invalid GLB chunk length");
+			if (type == JSON_CHUNK) {
+				String json = new String(data, offset, length, StandardCharsets.UTF_8).trim();
+				root = new JsonParser().parse(json).getAsJsonObject();
+			} else if (type == BIN_CHUNK) {
+				binary = ByteBuffer.wrap(data, offset, length).slice().order(ByteOrder.LITTLE_ENDIAN);
+			}
+			offset += length;
+		}
+		if (root == null || binary == null)
+			return null;
+
+		JsonArray meshes = root.getAsJsonArray("meshes");
+		if (meshes == null)
+			return null;
+		int[] result = null;
+		boolean foundCustomColors = false;
+		for (var meshElement : meshes) {
+			for (var primitiveElement : meshElement.getAsJsonObject().getAsJsonArray("primitives")) {
+				var primitive = primitiveElement.getAsJsonObject();
+				var attributes = primitive.getAsJsonObject("attributes");
+				if (attributes == null || !attributes.has("_COLOR"))
+					continue;
+				if (!attributes.has("TEXCOORD_1"))
+					throw new IOException("_COLOR primitive is missing TEXCOORD_1 corner IDs");
+
+				float[][] vertexColors = readAccessor(root, binary, attributes.get("_COLOR").getAsInt());
+				float[][] cornerIds = readAccessor(root, binary, attributes.get("TEXCOORD_1").getAsInt());
+				if (cornerIds.length == 0 || cornerIds[0].length < 2 ||
+					vertexColors.length != cornerIds.length || vertexColors[0].length < 3)
+					throw new IOException("Invalid _COLOR or TEXCOORD_1 accessor");
+
+				float countValue = Math.abs(cornerIds[0][1]);
+				int cornerCount = Math.round(countValue);
+				if (cornerCount <= 0 || countValue != cornerCount || cornerCount % 3 != 0)
+					throw new IOException("Invalid original corner count in TEXCOORD_1");
+				if (result == null) {
+					result = new int[cornerCount];
+					java.util.Arrays.fill(result, ModelOverride.NO_VERTEX_COLOR);
+				} else if (result.length != cornerCount) {
+					throw new IOException("Inconsistent original corner count across GLB primitives");
+				}
+
+				int[] indices;
+				if (primitive.has("indices")) {
+					float[][] indexValues = readAccessor(root, binary, primitive.get("indices").getAsInt());
+					indices = new int[indexValues.length];
+					for (int i = 0; i < indices.length; i++)
+						indices[i] = Math.round(indexValues[i][0]);
+				} else {
+					indices = new int[vertexColors.length];
+					for (int i = 0; i < indices.length; i++)
+						indices[i] = i;
+				}
+				if (indices.length % 3 != 0)
+					throw new IOException("_COLOR primitive does not contain triangles");
+
+				for (int i = 0; i < indices.length; i++) {
+					int vertex = indices[i];
+					if (vertex < 0 || vertex >= vertexColors.length)
+						throw new IOException("_COLOR primitive has an invalid vertex index");
+					float cornerValue = cornerIds[vertex][0];
+					int corner = Math.round(cornerValue);
+					if (cornerValue != corner || corner < 0 || corner >= result.length)
+						throw new IOException("Invalid corner ID in TEXCOORD_1");
+
+					float[] color = vertexColors[vertex];
+					float alpha = color.length > 3 ? color[3] : 1;
+					float[] srgb = {
+						clampColor(color[0]), clampColor(color[1]), clampColor(color[2])
+					};
+					int transparency = Math.round((1 - clampColor(alpha)) * 255);
+					result[corner] = transparency << 24 | ColorUtils.srgbToPackedHsl(srgb);
+				}
+				foundCustomColors = true;
+			}
+		}
+		return foundCustomColors ? result : null;
+	}
+
+	private static float[][] readAccessor(JsonObject root, ByteBuffer binary, int accessorIndex) throws IOException {
+		JsonArray accessors = root.getAsJsonArray("accessors");
+		JsonArray views = root.getAsJsonArray("bufferViews");
+		if (accessors == null || views == null || accessorIndex < 0 || accessorIndex >= accessors.size())
+			throw new IOException("Invalid GLB accessor index");
+		var accessor = accessors.get(accessorIndex).getAsJsonObject();
+		if (!accessor.has("bufferView"))
+			throw new IOException("Sparse GLB accessors are not supported for _COLOR");
+		int viewIndex = accessor.get("bufferView").getAsInt();
+		if (viewIndex < 0 || viewIndex >= views.size())
+			throw new IOException("Invalid GLB bufferView index");
+		var view = views.get(viewIndex).getAsJsonObject();
+		int componentType = accessor.get("componentType").getAsInt();
+		int componentBytes = componentByteSize(componentType);
+		int components = accessorComponentCount(accessor.get("type").getAsString());
+		int elementBytes = componentBytes * components;
+		int stride = view.has("byteStride") ? view.get("byteStride").getAsInt() : elementBytes;
+		int start = (view.has("byteOffset") ? view.get("byteOffset").getAsInt() : 0) +
+			(accessor.has("byteOffset") ? accessor.get("byteOffset").getAsInt() : 0);
+		int count = accessor.get("count").getAsInt();
+		if (stride < elementBytes || start < 0 || count < 0 ||
+			(long) start + (long) Math.max(0, count - 1) * stride + elementBytes > binary.limit())
+			throw new IOException("GLB accessor exceeds its binary buffer");
+
+		float[][] values = new float[count][components];
+		boolean normalized = accessor.has("normalized") && accessor.get("normalized").getAsBoolean();
+		for (int item = 0; item < count; item++) {
+			for (int component = 0; component < components; component++) {
+				int offset = start + item * stride + component * componentBytes;
+				values[item][component] = readComponent(binary, offset, componentType, normalized);
+			}
+		}
+		return values;
+	}
+
+	private static int componentByteSize(int type) throws IOException {
+		switch (type) {
+			case 5120:
+			case 5121: return 1;
+			case 5122:
+			case 5123: return 2;
+			case 5125:
+			case 5126: return 4;
+			default: throw new IOException("Unsupported GLB accessor component type " + type);
+		}
+	}
+
+	private static int accessorComponentCount(String type) throws IOException {
+		switch (type) {
+			case "SCALAR": return 1;
+			case "VEC2": return 2;
+			case "VEC3": return 3;
+			case "VEC4": return 4;
+			default: throw new IOException("Unsupported GLB accessor type " + type);
+		}
+	}
+
+	private static float readComponent(ByteBuffer data, int offset, int type, boolean normalized) throws IOException {
+		switch (type) {
+			case 5120: {
+				byte value = data.get(offset);
+				return normalized ? Math.max(-1, value / 127f) : value;
+			}
+			case 5121: {
+				int value = data.get(offset) & 0xFF;
+				return normalized ? value / 255f : value;
+			}
+			case 5122: {
+				short value = data.getShort(offset);
+				return normalized ? Math.max(-1, value / 32767f) : value;
+			}
+			case 5123: {
+				int value = data.getShort(offset) & 0xFFFF;
+				return normalized ? value / 65535f : value;
+			}
+			case 5125: {
+				long value = data.getInt(offset) & 0xFFFFFFFFL;
+				return normalized ? (float) (value / 4294967295.0) : value;
+			}
+			case 5126: return data.getFloat(offset);
+			default: throw new IOException("Unsupported GLB accessor component type " + type);
+		}
+	}
+
+	private static float clampColor(float value) {
+		return Math.max(0, Math.min(1, value));
+	}
+
 	private static String materialName(@Nullable JsonElement material) {
 		if (material == null || material.isJsonNull())
 			return "NONE";
@@ -225,7 +433,7 @@ public class ModelImporter {
 		throw new IllegalArgumentException("Expected a material name or object with a string name, got: " + material);
 	}
 
-	static JsonObject loadCustom(Path path, String baseMaterial) {
+	static JsonObject loadCustom(Path path, String baseMaterial, boolean importVertexColors) {
 		var scene = aiImportFile(path.toString(), 0);
 		if (scene == null)
 			throw new IllegalArgumentException("Unable to import " + path + ": " + aiGetErrorString());
@@ -249,6 +457,9 @@ public class ModelImporter {
 				throw new IllegalArgumentException("No triangles in " + path);
 			int faceCount = cornerCount / 3;
 			float[] coordinates = new float[Math.multiplyExact(faceCount, 6)];
+			int[] vertexColors = importVertexColors ? new int[cornerCount] : null;
+			if (vertexColors != null)
+				java.util.Arrays.fill(vertexColors, ModelOverride.NO_VERTEX_COLOR);
 			boolean[] seen = new boolean[faceCount * 3];
 			String[] faceMaterials = new String[faceCount];
 			var counts = new LinkedHashMap<String, Integer>();
@@ -257,8 +468,11 @@ public class ModelImporter {
 				var mesh = AIMesh.create(scene.mMeshes().get(m));
 				var uvs = mesh.mTextureCoords(0);
 				var ids = mesh.mTextureCoords(1);
+				AIColor4D.Buffer colors = importVertexColors ? findVertexColorChannel(mesh) : null;
 				if (uvs == null || ids == null || mesh.mNumUVComponents(0) < 2 || mesh.mNumUVComponents(1) < 2)
 					throw new IllegalArgumentException("Missing UV0 or original corner IDs in UV1; re-export the model: " + path);
+				if (importVertexColors && colors == null)
+					throw new IllegalArgumentException("Missing vertex colors in mesh " + m + " of " + path);
 				if (aiGetMaterialString(AIMaterial.create(scene.mMaterials().get(mesh.mMaterialIndex())), AI_MATKEY_NAME, 0, 0, name) != aiReturn_SUCCESS)
 					throw new IllegalArgumentException("Missing material name in " + path);
 				String material = name.dataString();
@@ -289,6 +503,22 @@ public class ModelImporter {
 						// Undo the image-orientation flip and material scale applied by ModelExporter.
 						coordinates[corner * 2] = (.5f - uv.x()) * scale[0] + .5f;
 						coordinates[corner * 2 + 1] = (.5f - uv.y()) * scale[1] + .5f;
+						if (vertexColors != null) {
+							var color = colors.get(vertex);
+							float red = color.r();
+							float green = color.g();
+							float blue = color.b();
+							float alpha = color.a();
+							if (!Float.isFinite(red) || !Float.isFinite(green) || !Float.isFinite(blue) || !Float.isFinite(alpha))
+								throw new IllegalArgumentException("Non-finite vertex color in " + path);
+							float[] srgb = {
+								Math.max(0, Math.min(1, red)),
+								Math.max(0, Math.min(1, green)),
+								Math.max(0, Math.min(1, blue))
+							};
+							int transparency = Math.round((1 - Math.max(0, Math.min(1, alpha))) * 255);
+							vertexColors[corner] = transparency << 24 | ColorUtils.srgbToPackedHsl(srgb);
+						}
 					}
 					faceMaterials[originalFace] = material;
 					counts.merge(material, 1, Integer::sum);
@@ -336,6 +566,12 @@ public class ModelImporter {
 			}
 			if (materials.size() > 0)
 				custom.add("materials", materials);
+			if (vertexColors != null) {
+				var colors = new JsonArray();
+				for (int color : vertexColors)
+					colors.add(color);
+				custom.add("vertexColors", colors);
+			}
 			var result = new JsonObject();
 			result.addProperty("material", baseMaterial);
 			result.add("custom", custom);
@@ -343,6 +579,24 @@ public class ModelImporter {
 		} finally {
 			aiReleaseImport(scene);
 		}
+	}
+
+	@Nullable
+	private static AIColor4D.Buffer findVertexColorChannel(AIMesh mesh) {
+		AIColor4D.Buffer firstChannel = null;
+		for (int channel = 0; channel < AI_MAX_NUMBER_OF_COLOR_SETS; channel++) {
+			AIColor4D.Buffer colors = mesh.mColors(channel);
+			if (colors == null)
+				continue;
+			if (firstChannel == null)
+				firstChannel = colors;
+			for (int i = 0; i < mesh.mNumVertices(); i++) {
+				AIColor4D color = colors.get(i);
+				if (color.r() < .9999f || color.g() < .9999f || color.b() < .9999f)
+					return colors;
+			}
+		}
+		return firstChannel;
 	}
 
 	static JsonArray loadUvs(Path path) {
@@ -481,7 +735,8 @@ public class ModelImporter {
 				if (object.uvLocation != null)
 					reports.add("Replaced UV path for '" + object.description + "' " + object.uvLocation);
 				if (object.customPath != null && matchesModelPath(targetModelPath, object.customPath)) {
-					var imported = loadCustom(MODEL_EXPORTS.toPath().resolve(object.customPath).normalize(), object.baseMaterial);
+					var imported = loadCustom(MODEL_EXPORTS.toPath().resolve(object.customPath).normalize(),
+						object.baseMaterial, false);
 					int lineStart = original.lastIndexOf('\n', object.customStart - 1) + 1;
 					int indentEnd = lineStart;
 					while (indentEnd < object.customStart && (original.charAt(indentEnd) == ' ' || original.charAt(indentEnd) == '\t'))

@@ -13,8 +13,11 @@ import net.runelite.api.events.ClientTick;
 import net.runelite.api.events.MenuOptionClicked;
 import net.runelite.client.callback.ClientThread;
 import net.runelite.client.config.ConfigManager;
+import net.runelite.client.eventbus.EventBus;
 import net.runelite.client.eventbus.Subscribe;
+import net.runelite.client.events.PluginChanged;
 import net.runelite.client.plugins.Plugin;
+import net.runelite.client.plugins.PluginDependency;
 import net.runelite.client.plugins.PluginDescriptor;
 import net.runelite.client.plugins.PluginManager;
 import rs117.hd.model.ModelExporter;
@@ -50,6 +53,9 @@ public class DeveloperPlugin extends Plugin {
 	@Inject
 	private Client client;
 
+	@Inject
+	private EventBus eventBus;
+
 	@DevInject
 	private HdPlugin plugin;
 
@@ -69,6 +75,7 @@ public class DeveloperPlugin extends Plugin {
 	private InspectorPanel inspectorPanel;
 
 	private boolean inspectorSelectionShortcutHeld;
+	private PluginLifecycle pluginLifecycle;
 
 	@Provides
 	DeveloperConfig provideConfig(ConfigManager configManager) {
@@ -78,6 +85,10 @@ public class DeveloperPlugin extends Plugin {
 	@Override
 	protected void startUp() {
 		inspectorSelectionShortcutHeld = false;
+		if (pluginLifecycle == null) {
+			pluginLifecycle = new PluginLifecycle(this, pluginManager);
+			eventBus.register(pluginLifecycle);
+		}
 		clientThread.invoke(() -> {
 			if (!initializeInjection()) {
 				SwingUtilities.invokeLater(() -> {
@@ -171,6 +182,33 @@ public class DeveloperPlugin extends Plugin {
 
 	private boolean isInspectorSelectionShortcutHeld() {
 		return client.isKeyPressed(KeyCode.KC_CONTROL) && client.isKeyPressed(KeyCode.KC_ALT);
+	}
+
+	private static final class PluginLifecycle {
+		private final DeveloperPlugin developerPlugin;
+		private final PluginManager pluginManager;
+
+		private PluginLifecycle(DeveloperPlugin developerPlugin, PluginManager pluginManager) {
+			this.developerPlugin = developerPlugin;
+			this.pluginManager = pluginManager;
+		}
+
+		@Subscribe
+		public void onPluginChanged(PluginChanged event) {
+			if (!(event.getPlugin() instanceof HdPlugin))
+				return;
+
+			try {
+				if (event.isLoaded()) {
+					if (pluginManager.isPluginEnabled(developerPlugin) && !pluginManager.isPluginActive(developerPlugin))
+						pluginManager.startPlugin(developerPlugin);
+				} else if (pluginManager.isPluginActive(developerPlugin)) {
+					pluginManager.stopPlugin(developerPlugin);
+				}
+			} catch (Exception ex) {
+				log.error("Failed to synchronize the 117 HD Developer plugin with 117 HD", ex);
+			}
+		}
 	}
 
 }

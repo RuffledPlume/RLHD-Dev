@@ -361,6 +361,7 @@ public final class InspectorPanel extends PluginPanel {
 	@Override
 	public void onDeactivate() {
 		setSelectionMode(false);
+		selectionOverlay.clearPreviewShapes();
 		GamevalManager.Handle handle = gamevalHandle;
 		gamevalHandle = null;
 		if (handle != null) handle.close();
@@ -635,9 +636,16 @@ public final class InspectorPanel extends PluginPanel {
 			header.add(createSectionTitle(section.title), BorderLayout.CENTER);
 		}
 
-		if (!section.actions.isEmpty() || section.objectIdSearch != null || section.modelOverrideSearch != null) {
+		if (!section.actions.isEmpty() || !section.toggles.isEmpty() || section.objectIdSearch != null || section.modelOverrideSearch != null) {
 			JPanel actions = new JPanel(new FlowLayout(FlowLayout.RIGHT, 4, 0));
 			actions.setBackground(ColorScheme.DARKER_GRAY_COLOR);
+			for (var toggle : section.toggles) {
+				JCheckBox checkBox = new JCheckBox(toggle.label, toggle.initiallySelected);
+				checkBox.setOpaque(false);
+				checkBox.setForeground(ColorScheme.LIGHT_GRAY_COLOR);
+				checkBox.addActionListener(e -> toggle.onToggle.accept(checkBox.isSelected()));
+				actions.add(checkBox);
+			}
 			for (var action : section.actions) {
 				List<JCheckBox> optionControls = new ArrayList<>();
 				for (var option : action.options) {
@@ -970,7 +978,8 @@ public final class InspectorPanel extends PluginPanel {
 			Object defaults = OverrideFields.defaults(definition);
 			Map<Field, Object> previousValues = new IdentityHashMap<>();
 			Map<Field, Object> defaultValues = new IdentityHashMap<>();
-			Set<String> customModelFields = Set.of("model", "uvs", "materials", "faces", "material");
+			Set<String> customModelFields = Set.of(
+				"model", "vertexColors", "uvs", "materials", "faces", "material");
 			for (Field candidate : OverrideFields.fields(definition)) {
 				if (!customModelFields.contains(candidate.getName()))
 					continue;
@@ -1006,6 +1015,8 @@ public final class InspectorPanel extends PluginPanel {
 	private static Object snapshotCustomModelField(Object value) {
 		if (value instanceof float[])
 			return ((float[]) value).clone();
+		if (value instanceof int[])
+			return ((int[]) value).clone();
 		if (value instanceof ModelOverride[]) {
 			ModelOverride[] overrides = (ModelOverride[]) value;
 			ModelOverride[] copy = new ModelOverride[overrides.length];

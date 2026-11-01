@@ -61,6 +61,7 @@ public final class InspectorOutput {
 		public final List<Row> rows = new ArrayList<>();
 		public final List<Section> children = new ArrayList<>();
 		public final List<Action> actions = new ArrayList<>();
+		public final List<Toggle> toggles = new ArrayList<>();
 		@Nullable
 		public ObjectIdSearch objectIdSearch;
 		@Nullable
@@ -132,8 +133,13 @@ public final class InspectorOutput {
 			return this;
 		}
 
+
 		public Section child(String title, @Nullable Object target, boolean initiallyCollapsed) {
-			Section child = new Section(title, target, true, initiallyCollapsed);
+			return child(title, target, true, false);
+		}
+
+		public Section child(String title, @Nullable Object target, boolean collapisble, boolean initiallyCollapsed) {
+			Section child = new Section(title, target, collapisble, initiallyCollapsed);
 			children.add(child);
 			return child;
 		}
@@ -155,6 +161,11 @@ public final class InspectorOutput {
 		public Section actionWithBusy(String label, boolean enabled, String busyMessage,
 			String completionMessage, Runnable callback) {
 			actions.add(new Action(label, enabled, callback, busyMessage, completionMessage));
+			return this;
+		}
+
+		public Section toggle(String label, boolean selected, Consumer<Boolean> onToggle) {
+			toggles.add(new Toggle(label, selected, onToggle));
 			return this;
 		}
 
@@ -222,6 +233,18 @@ public final class InspectorOutput {
 			this.busyMessage = null;
 			this.completionMessage = null;
 			this.uiCallback = callback;
+		}
+	}
+
+	public static final class Toggle {
+		public final String label;
+		public final boolean initiallySelected;
+		public final Consumer<Boolean> onToggle;
+
+		private Toggle(String label, boolean initiallySelected, Consumer<Boolean> onToggle) {
+			this.label = label;
+			this.initiallySelected = initiallySelected;
+			this.onToggle = onToggle;
 		}
 	}
 

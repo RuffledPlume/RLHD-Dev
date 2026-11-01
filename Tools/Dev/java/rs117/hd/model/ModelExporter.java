@@ -1,5 +1,8 @@
 package rs117.hd.model;
 
+import com.google.gson.GsonBuilder;
+import com.google.gson.JsonObject;
+import com.google.gson.JsonParser;
 import java.awt.Color;
 import java.awt.geom.AffineTransform;
 import java.awt.image.AffineTransformOp;
@@ -7,9 +10,14 @@ import java.awt.image.BufferedImage;
 import java.io.ByteArrayOutputStream;
 import java.io.IOException;
 import java.nio.ByteBuffer;
+import java.nio.ByteOrder;
 import java.nio.FloatBuffer;
 import java.nio.IntBuffer;
+import java.nio.charset.StandardCharsets;
+import java.nio.file.AtomicMoveNotSupportedException;
 import java.nio.file.Files;
+import java.nio.file.Path;
+import java.nio.file.StandardCopyOption;
 import java.util.ArrayList;
 import java.util.Collections;
 import java.util.Comparator;
@@ -1005,6 +1013,8 @@ public class ModelExporter {
 						long finalizeStart = System.nanoTime();
 						if (wholeScene)
 							SceneGltfExporter.embed(destination.toPath(), snapshot);
+						if (extension.equals("glb"))
+							addCustomColorAttribute(destination.toPath());
 						log.info("Export finalization: {} seconds", (System.nanoTime() - finalizeStart) / 1e9);
 						chatMessageManager.queue(QueuedMessage.builder()
 							.type(ChatMessageType.CONSOLE)
@@ -1064,6 +1074,73 @@ public class ModelExporter {
 	private void completeExport(Runnable onCompleted) {
 		if (onCompleted != null)
 			onCompleted.run();
+	}
+
+	private static void addCustomColorAttribute(Path path) throws IOException {
+		byte[] source = Files.readAllBytes(path);
+		ByteBuffer input = ByteBuffer.wrap(source).order(ByteOrder.LITTLE_ENDIAN);
+		if (source.length < 20 || input.getInt(0) != 0x46546C67 || input.getInt(4) != 2)
+			throw new IOException("Not a GLB 2.0 file: " + path);
+
+		final int JSON_CHUNK = 0x4E4F534A;
+		List<Integer> chunkTypes = new ArrayList<>();
+		List<byte[]> chunks = new ArrayList<>();
+		JsonObject gltf = null;
+		for (int offset = 12; offset + 8 <= source.length;) {
+			int length = input.getInt(offset);
+			int type = input.getInt(offset + 4);
+			offset += 8;
+			if (length < 0 || offset + length > source.length)
+				throw new IOException("Invalid GLB chunk length in " + path);
+			byte[] chunk = java.util.Arrays.copyOfRange(source, offset, offset + length);
+			chunkTypes.add(type);
+			chunks.add(chunk);
+			if (type == JSON_CHUNK)
+				gltf = new JsonParser().parse(new String(chunk, StandardCharsets.UTF_8)).getAsJsonObject();
+			offset += length;
+		}
+		if (gltf == null)
+			throw new IOException("GLB has no JSON chunk: " + path);
+
+		boolean changed = false;
+		for (var meshElement : gltf.getAsJsonArray("meshes")) {
+			for (var primitiveElement : meshElement.getAsJsonObject().getAsJsonArray("primitives")) {
+				JsonObject attributes = primitiveElement.getAsJsonObject().getAsJsonObject("attributes");
+				if (!attributes.has("_COLOR") && attributes.has("COLOR_0")) {
+					attributes.add("_COLOR", attributes.get("COLOR_0").deepCopy());
+					changed = true;
+				}
+			}
+		}
+		if (!changed)
+			return;
+
+		byte[] json = new GsonBuilder().disableHtmlEscaping().create().toJson(gltf).getBytes(StandardCharsets.UTF_8);
+		int paddedJsonLength = (json.length + 3) & ~3;
+		byte[] paddedJson = java.util.Arrays.copyOf(json, paddedJsonLength);
+		java.util.Arrays.fill(paddedJson, json.length, paddedJsonLength, (byte) ' ');
+		int totalLength = 12;
+		for (int i = 0; i < chunks.size(); i++)
+			totalLength += 8 + (chunkTypes.get(i) == JSON_CHUNK ? paddedJsonLength : chunks.get(i).length);
+
+		ByteBuffer output = ByteBuffer.allocate(totalLength).order(ByteOrder.LITTLE_ENDIAN);
+		output.put("glTF".getBytes(StandardCharsets.US_ASCII)).putInt(2).putInt(totalLength);
+		for (int i = 0; i < chunks.size(); i++) {
+			byte[] chunk = chunkTypes.get(i) == JSON_CHUNK ? paddedJson : chunks.get(i);
+			output.putInt(chunk.length).putInt(chunkTypes.get(i)).put(chunk);
+		}
+
+		Path temporary = Files.createTempFile(path.getParent(), "color-channel-", ".glb");
+		try {
+			Files.write(temporary, output.array());
+			try {
+				Files.move(temporary, path, StandardCopyOption.ATOMIC_MOVE, StandardCopyOption.REPLACE_EXISTING);
+			} catch (AtomicMoveNotSupportedException ex) {
+				Files.move(temporary, path, StandardCopyOption.REPLACE_EXISTING);
+			}
+		} finally {
+			Files.deleteIfExists(temporary);
+		}
 	}
 
 	private void pushVanillaModel(

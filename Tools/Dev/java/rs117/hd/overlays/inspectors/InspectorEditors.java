@@ -10,6 +10,7 @@ import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.Comparator;
 import java.util.List;
+import java.util.function.Consumer;
 import com.google.gson.JsonArray;
 import com.google.gson.JsonElement;
 import com.google.gson.JsonParser;
@@ -27,6 +28,8 @@ import javax.swing.JTextField;
 import javax.swing.SwingUtilities;
 import javax.swing.event.DocumentEvent;
 import javax.swing.event.DocumentListener;
+import javax.swing.event.PopupMenuEvent;
+import javax.swing.event.PopupMenuListener;
 import net.runelite.client.callback.ClientThread;
 import net.runelite.client.ui.ColorScheme;
 import rs117.hd.scene.AreaManager;
@@ -40,6 +43,16 @@ import rs117.hd.utils.ColorUtils;
 /** Builds the Swing editors the inspector uses to change override fields in place. */
 public final class InspectorEditors {
 	private static final Color INVALID = new Color(120, 40, 40);
+
+	public static final class ColorEditorData {
+		public final int[] colors;
+		public final Consumer<Integer> onHover;
+
+		public ColorEditorData(int[] colors, Consumer<Integer> onHover) {
+			this.colors = colors;
+			this.onHover = onHover;
+		}
+	}
 
 	private InspectorEditors() {}
 
@@ -129,12 +142,16 @@ public final class InspectorEditors {
 	private static JComponent colorExpressionEditor(Field field, Object target, InspectorHistory history,
 		ClientThread clientThread, Object initialValue, String initialText, Object editorData) {
 		JTextField expression = (JTextField) textField(field, target, history, clientThread, initialText);
-		int[] modelColors = editorData instanceof int[] ? (int[]) editorData : new int[0];
+		ColorEditorData colorEditorData = editorData instanceof ColorEditorData ? (ColorEditorData) editorData : null;
+		int[] modelColors = colorEditorData != null ? colorEditorData.colors
+			: editorData instanceof int[] ? (int[]) editorData : new int[0];
 		ColorChoice[] choices = Arrays.stream(modelColors).distinct().sorted()
 			.mapToObj(ColorChoice::new).toArray(ColorChoice[]::new);
 		JComboBox<ColorChoice> colors = new JComboBox<>(choices);
 		colors.setMaximumRowCount(12);
 		colors.setRenderer((list, value, index, isSelected, cellHasFocus) -> {
+			if (index >= 0 && isSelected && value != null && colorEditorData != null)
+				colorEditorData.onHover.accept(value.color);
 			JPanel row = new JPanel(new BorderLayout(6, 0));
 			row.setOpaque(true);
 			row.setBackground(isSelected ? list.getSelectionBackground() : list.getBackground());
@@ -151,6 +168,13 @@ public final class InspectorEditors {
 			row.add(label, BorderLayout.CENTER);
 			return row;
 		});
+		if (colorEditorData != null) {
+			colors.addPopupMenuListener(new PopupMenuListener() {
+				@Override public void popupMenuWillBecomeVisible(PopupMenuEvent event) {}
+				@Override public void popupMenuWillBecomeInvisible(PopupMenuEvent event) { colorEditorData.onHover.accept(null); }
+				@Override public void popupMenuCanceled(PopupMenuEvent event) { colorEditorData.onHover.accept(null); }
+			});
+		}
 		colors.setToolTipText("Choose a color from the selected model");
 		colors.setEnabled(choices.length > 0);
 

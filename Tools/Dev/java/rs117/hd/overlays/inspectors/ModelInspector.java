@@ -1,6 +1,10 @@
 package rs117.hd.overlays.inspectors;
 
 import java.awt.Component;
+import java.awt.Polygon;
+import java.awt.Rectangle;
+import java.awt.Shape;
+import java.awt.geom.AffineTransform;
 import java.io.File;
 import java.io.IOException;
 import java.lang.reflect.Field;
@@ -20,6 +24,7 @@ import com.google.gson.JsonPrimitive;
 import com.google.gson.JsonSerializer;
 import lombok.extern.slf4j.Slf4j;
 import net.runelite.api.*;
+import net.runelite.api.coords.LocalPoint;
 import net.runelite.api.coords.WorldPoint;
 import net.runelite.client.callback.ClientThread;
 import rs117.hd.DeveloperPlugin;
@@ -27,18 +32,21 @@ import rs117.hd.HdPlugin;
 import rs117.hd.model.ModelExporter;
 import rs117.hd.model.ModelImporter;
 import rs117.hd.overlays.InspectorPanel;
+import rs117.hd.overlays.InspectorSelectionOverlay;
 import rs117.hd.scene.GamevalManager;
 import rs117.hd.scene.ModelOverrideManager;
 import rs117.hd.scene.areas.AABB;
 import rs117.hd.scene.materials.Material;
 import rs117.hd.scene.model_overrides.ModelOverride;
 import rs117.hd.utils.GsonUtils;
+import rs117.hd.utils.HDUtils;
 import rs117.hd.utils.ModelHash;
 import rs117.hd.utils.Props;
 import rs117.hd.utils.ResourcePath;
 import rs117.hd.utils.Util;
 
 import static rs117.hd.utils.ResourcePath.path;
+import static net.runelite.api.Perspective.modelToCanvas;
 
 @Slf4j
 public final class ModelInspector implements Inspector {
@@ -67,7 +75,12 @@ public final class ModelInspector implements Inspector {
 	@Inject
 	private InspectorHistory history;
 
+	@Inject
+	private InspectorSelectionOverlay selectionOverlay;
+
 	private Runnable refreshInspector = () -> {};
+	private volatile Integer hoveredPreviewColor;
+	private volatile boolean importVertexColors;
 
 	public void setRefreshCallback(@Nullable Runnable callback) {
 		refreshInspector = callback == null ? () -> {} : callback;
@@ -80,6 +93,7 @@ public final class ModelInspector implements Inspector {
 
 	@Override
 	public void draw(Object object, InspectorOutput out, GamevalManager.Handle gamevals) {
+		clearColorPreview();
 		final Renderable renderable = Util.getRenderable(object);
 		long hash = object instanceof TileObject ? ((TileObject) object).getHash()
 			: object instanceof Node ? ((Node) object).getHash() : -1;
@@ -110,23 +124,36 @@ public final class ModelInspector implements Inspector {
 			: "Model Override: " + descriptionOr(selectedDefinition.description, "UNKNOWN");
 		var parentSection = out.section(overrideTitle, definition);
 		if (selectedDefinition != null) {
-			InspectorOutput.Section customSection = addCustomModelSection(parentSection, selectedDefinition);
-			customSection.actionWithOptions("Export", List.of(
+			InspectorOutput.Section customSection = parentSection.child("Custom", selectedDefinition, false)
+				.allowAddingFields(false);
+			addCustomModelFields(customSection, selectedDefinition);
+			InspectorOutput.Section importSection = customSection.child("", selectedDefinition, false, false)
+				.allowAddingFields(false);
+			importSection.toggle("Import Vertex Colours", importVertexColors, selected -> importVertexColors = selected);
+			importSection.uiAction("Import…", true,
+				parent -> browseForModel(parent, uuid, type, id, position, importVertexColors));
+
+			InspectorOutput.Section exportSection = customSection.child("", selectedDefinition, false, false)
+				.allowAddingFields(false);
+			exportSection.actionWithOptions("Export", List.of(
 				new InspectorOutput.ActionOption("Setup import", "Set up this model override to import the exported model", true),
 				new InspectorOutput.ActionOption("Make unique", "Make a shared override unique before setting up import", false)
-			), "Exporting selected model…", "Export operation finished.", (options, onCompleted) ->
+			), "Exporting selected model…", "Export operation finished.", (options, onCompleted) -> {
+				boolean importColors = importVertexColors;
 				modelExporter.exportModel(object, renderable, filename -> {
 					if (options[0] || options[1]) {
 						ModelOverride currentDefinition = currentDefinition(uuid, type, id, position);
-						setupOverrideForImport(uuid, currentDefinition, filename, options[1]);
+						setupOverrideForImport(uuid, currentDefinition, filename, options[1], importColors);
 						save();
 						refreshInspector.run();
 					}
-				}, onCompleted));
-			customSection.uiAction("Import…", true,
-					parent -> browseForModel(parent, uuid, type, id, position));
+				}, onCompleted);
+			});
+
+			InspectorOutput.Section bakeSection = customSection.child("", selectedDefinition, false, false)
+				.allowAddingFields(false);
 			boolean canBake = selectedDefinition.model != null && !selectedDefinition.model.isBlank();
-			customSection.actionWithBusy("Bake", canBake, "Baking model data…", "Bake operation finished.",
+			bakeSection.actionWithBusy("Bake", canBake, "Baking model data…", "Bake operation finished.",
 				() -> bakeModelReference(uuid, type, id, position));
 
 			Set<Integer> objectIds = selectedDefinition.objectIds == null
@@ -147,7 +174,7 @@ public final class ModelInspector implements Inspector {
 					parentSection.field(field);
 			parentSection.action("Make unique", isSharedDefinition(selectedDefinition), () -> makeUnique(uuid, selectedDefinition));
 			parentSection.action("Add color", () -> addColorOverride(selectedDefinition));
-			addColorOverrideSections(parentSection, selectedDefinition, modelColors(model));
+			addColorOverrideSections(parentSection, selectedDefinition, modelColors(model), object, renderable, model);
 		} else {
 			parentSection.line("Status", "No model override defined");
 			parentSection.action("New Override", () -> addOverride(uuid));
@@ -202,15 +229,11 @@ public final class ModelInspector implements Inspector {
 
 	private static boolean isCustomModelField(Field field) {
 		String name = field.getName();
-		return name.equals("model") || name.equals("uvs") || name.equals("materials") || name.equals("faces");
+		return name.equals("model") || name.equals("vertexColors") ||
+			name.equals("uvs") || name.equals("materials") || name.equals("faces");
 	}
 
-	private InspectorOutput.Section addCustomModelSection(InspectorOutput.Section parent,
-		@Nullable ModelOverride definition) {
-		InspectorOutput.Section custom = parent.child("Custom", definition, false).allowAddingFields(false);
-		if (definition == null)
-			return custom;
-
+	private void addCustomModelFields(InspectorOutput.Section custom, ModelOverride definition) {
 		Field modelField = null;
 		Field materialsField = null;
 		for (Field field : OverrideFields.fields(definition)) {
@@ -235,6 +258,8 @@ public final class ModelInspector implements Inspector {
 				count += " (" + definition.uvs.length / 6 + " faces)";
 			custom.line("UV count", count);
 		}
+		if (definition.vertexColors != null)
+			custom.line("Vertex colors", definition.vertexColors.length + " corner colors");
 		if (materials != null) {
 			for (int i = 0; i < materials.length; i++) {
 				ModelOverride group = materials[i];
@@ -252,7 +277,6 @@ public final class ModelInspector implements Inspector {
 				}
 			}
 		}
-		return custom;
 	}
 
 	private ModelOverride findDefinition(int type, int id, int[] worldPos) {
@@ -269,7 +293,8 @@ public final class ModelInspector implements Inspector {
 		return definition == null ? modelOverrideManager.getDefinition(uuid, position) : definition;
 	}
 
-	private void browseForModel(Component parent, int uuid, int type, int id, int[] position) {
+	private void browseForModel(Component parent, int uuid, int type, int id, int[] position,
+		boolean importVertexColors) {
 		DeveloperPlugin.MODEL_EXPORTS.mkdirs();
 		Path root = DeveloperPlugin.MODEL_EXPORTS.toPath().toAbsolutePath().normalize();
 		JFileChooser chooser = new JFileChooser(root.toFile());
@@ -289,7 +314,8 @@ public final class ModelInspector implements Inspector {
 		}
 		String relativePath = root.relativize(selected).toString().replace(File.separatorChar, '/');
 		Runnable importModel = () -> {
-			setupOverrideForImport(uuid, currentDefinition(uuid, type, id, position), relativePath, false);
+			setupOverrideForImport(uuid, currentDefinition(uuid, type, id, position), relativePath, false,
+				importVertexColors);
 			save();
 			refreshInspector.run();
 		};
@@ -400,7 +426,8 @@ public final class ModelInspector implements Inspector {
 		history.execute(() -> removeId(source, uuid), () -> addId(source, uuid));
 	}
 
-	private void addColorOverrideSections(InspectorOutput.Section parentSection, ModelOverride owner, int[] modelColors) {
+	private void addColorOverrideSections(InspectorOutput.Section parentSection, ModelOverride owner, int[] modelColors,
+		Object object, Renderable renderable, Model model) {
 		if (owner.colorOverrides == null) return;
 		for (int i = 0; i < owner.colorOverrides.length; i++) {
 			ModelOverride colorOverride = owner.colorOverrides[i];
@@ -412,7 +439,8 @@ public final class ModelInspector implements Inspector {
 			for (Field field : OverrideFields.fields(colorOverride)) {
 				if (field.getName().equals("colors")) {
 					colorsField = field;
-					section.field(field, modelColors);
+					section.field(field, new InspectorEditors.ColorEditorData(modelColors,
+						color -> previewColorFaces(object, renderable, model, color)));
 					break;
 				}
 			}
@@ -420,6 +448,140 @@ public final class ModelInspector implements Inspector {
 				if (!field.equals(colorsField)) section.field(field);
 			section.action("Remove", () -> removeColorOverride(owner, colorOverride));
 		}
+	}
+
+	private void previewColorFaces(Object object, Renderable renderable, Model model, Integer color) {
+		if (color == null) {
+			clearColorPreview();
+			return;
+		}
+		if (Objects.equals(hoveredPreviewColor, color))
+			return;
+		hoveredPreviewColor = color;
+		clientThread.invoke(() -> selectionOverlay.setPreviewShapes(findFacesMatchingColor(object, renderable, model, color)));
+	}
+
+	private void clearColorPreview() {
+		hoveredPreviewColor = null;
+		clientThread.invoke(selectionOverlay::clearPreviewShapes);
+	}
+
+	private List<Shape> findFacesMatchingColor(Object object, Renderable renderable, Model model, int color) {
+		if (model == null || renderable == null)
+			return List.of();
+		WorldView worldView = client.getTopLevelWorldView();
+		int centerX, centerY, centerZ, orientation = 0;
+		if (object instanceof Actor) {
+			Actor actor = (Actor) object;
+			LocalPoint location = actor.getLocalLocation();
+			worldView = actor.getWorldView();
+			if (location == null || worldView == null)
+				return List.of();
+			centerX = location.getX();
+			centerY = location.getY();
+			centerZ = worldView.getTileHeight(centerX, centerY, worldView.getPlane()) + actor.getAnimationHeightOffset();
+			orientation = actor.getOrientation();
+		} else if (object instanceof TileObject) {
+			TileObject tileObject = (TileObject) object;
+			worldView = tileObject.getWorldView();
+			centerX = tileObject.getX();
+			centerY = tileObject.getY();
+			centerZ = tileObject.getZ();
+			if (tileObject instanceof ItemLayer)
+				centerZ -= ((ItemLayer) tileObject).getHeight();
+			if (tileObject instanceof GameObject) {
+				GameObject gameObject = (GameObject) tileObject;
+				orientation = gameObject.getModelOrientation() + HDUtils.getModelPreOrientation(gameObject.getConfig());
+			} else if (tileObject instanceof WallObject) {
+				WallObject wall = (WallObject) tileObject;
+				orientation = HDUtils.convertWallObjectOrientation(renderable == wall.getRenderable1()
+					? wall.getOrientationA() : wall.getOrientationB());
+			} else if (tileObject instanceof DecorativeObject) {
+				DecorativeObject decoration = (DecorativeObject) tileObject;
+				boolean first = renderable == decoration.getRenderable();
+				centerX += first ? decoration.getXOffset() : decoration.getXOffset2();
+				centerY += first ? decoration.getYOffset() : decoration.getYOffset2();
+				orientation = HDUtils.getModelPreOrientation(decoration.getConfig());
+			} else if (tileObject instanceof GroundObject) {
+				orientation = HDUtils.getModelPreOrientation(((GroundObject) tileObject).getConfig());
+			}
+		} else if (object instanceof GraphicsObject) {
+			GraphicsObject graphicsObject = (GraphicsObject) object;
+			LocalPoint location = graphicsObject.getLocation();
+			if (location == null)
+				return List.of();
+			centerX = location.getX();
+			centerY = location.getY();
+			centerZ = graphicsObject.getZ();
+		} else if (object instanceof Projectile) {
+			Projectile projectile = (Projectile) object;
+			centerX = (int) projectile.getX();
+			centerY = (int) projectile.getY();
+			centerZ = (int) projectile.getZ();
+			orientation = projectile.getOrientation();
+		} else {
+			return List.of();
+		}
+
+		if (worldView == null)
+			return List.of();
+		orientation &= 2047;
+		int vertexCount = model.getVerticesCount();
+		float[] verticesX = model.getVerticesX();
+		float[] verticesY = model.getVerticesY();
+		float[] verticesZ = model.getVerticesZ();
+		int[] canvasX = new int[vertexCount];
+		int[] canvasY = new int[vertexCount];
+		modelToCanvas(client, worldView, vertexCount, centerX, centerY, centerZ, orientation,
+			verticesX, verticesZ, verticesY, canvasX, canvasY);
+		int minX = Integer.MAX_VALUE, minY = Integer.MAX_VALUE;
+		int maxX = Integer.MIN_VALUE, maxY = Integer.MIN_VALUE;
+		for (int i = 0; i < vertexCount; i++) {
+			if (canvasX[i] == Integer.MIN_VALUE || canvasY[i] == Integer.MIN_VALUE)
+				continue;
+			minX = Math.min(minX, canvasX[i]);
+			minY = Math.min(minY, canvasY[i]);
+			maxX = Math.max(maxX, canvasX[i]);
+			maxY = Math.max(maxY, canvasY[i]);
+		}
+
+		int[] faceColors = model.getFaceColors1();
+		int[] faceColors3 = model.getFaceColors3();
+		int[] indices1 = model.getFaceIndices1();
+		int[] indices2 = model.getFaceIndices2();
+		int[] indices3 = model.getFaceIndices3();
+		if (faceColors == null || faceColors3 == null || indices1 == null || indices2 == null || indices3 == null)
+			return List.of();
+
+		List<Shape> shapes = new ArrayList<>();
+		for (int face = 0; face < model.getFaceCount(); face++) {
+			if (faceColors[face] != color || faceColors3[face] == -2)
+				continue;
+			int a = indices1[face], b = indices2[face], c = indices3[face];
+			if (a < 0 || b < 0 || c < 0 || a >= vertexCount || b >= vertexCount || c >= vertexCount ||
+				canvasX[a] == Integer.MIN_VALUE || canvasX[b] == Integer.MIN_VALUE || canvasX[c] == Integer.MIN_VALUE ||
+				canvasY[a] == Integer.MIN_VALUE || canvasY[b] == Integer.MIN_VALUE || canvasY[c] == Integer.MIN_VALUE)
+				continue;
+			Polygon triangle = new Polygon(
+				new int[] { canvasX[a], canvasX[b], canvasX[c] },
+				new int[] { canvasY[a], canvasY[b], canvasY[c] }, 3);
+			if (!triangle.getBounds().isEmpty())
+				shapes.add(triangle);
+		}
+
+		Shape referenceHull = object instanceof Actor ? ((Actor) object).getConvexHull()
+			: object instanceof TileObject ? ((TileObject) object).getClickbox() : null;
+		if (referenceHull != null && minX != Integer.MAX_VALUE && !shapes.isEmpty()) {
+			Rectangle projectedBounds = new Rectangle(minX, minY, maxX - minX + 1, maxY - minY + 1);
+			Rectangle hullBounds = referenceHull.getBounds();
+			int offsetX = (int) Math.round(hullBounds.getCenterX() - projectedBounds.getCenterX());
+			int offsetY = (int) Math.round(hullBounds.getCenterY() - projectedBounds.getCenterY());
+			if (offsetX != 0 || offsetY != 0) {
+				AffineTransform translation = AffineTransform.getTranslateInstance(offsetX, offsetY);
+				shapes.replaceAll(shape -> translation.createTransformedShape(shape));
+			}
+		}
+		return shapes;
 	}
 
 	private static int[] modelColors(Model model) {
@@ -438,25 +600,30 @@ public final class ModelInspector implements Inspector {
 		history.execute(() -> owner.replaceColorOverrides(copy(before)), () -> owner.replaceColorOverrides(copy(after)));
 	}
 
-	private void setupOverrideForImport(int uuid, @Nullable ModelOverride source, String filename, boolean makeUnique) {
+	private void setupOverrideForImport(int uuid, @Nullable ModelOverride source, String filename, boolean makeUnique,
+		boolean importVertexColors) {
 		if (source == null) {
 			ModelOverride definition = new ModelOverride();
 			definition.description = "UNKNOWN";
 			definition.model = filename;
+			definition.vertexColors = importVertexColors ? modelImporter.loadVertexColors(filename) : null;
 			setOnlyId(definition, uuid);
 			history.execute(() -> removeDefinition(definition), () -> addDefinition(definition));
 			return;
 		}
 
 		ModelOverride definition = makeUnique && isSharedDefinition(source) ? makeUnique(uuid, source) : source;
-		if (Objects.equals(definition.model, filename))
-			return;
+		if (!Objects.equals(definition.model, filename))
+			history.setField(field(definition, "model"), definition, filename, false);
+		int[] vertexColors = importVertexColors ? modelImporter.loadVertexColors(filename) : null;
+		history.setField(field(definition, "vertexColors"), definition, vertexColors, false);
+	}
 
-		String previousModel = definition.model;
-		history.execute(
-			() -> definition.model = previousModel,
-			() -> definition.model = filename
-		);
+	private static Field field(ModelOverride definition, String name) {
+		for (Field field : OverrideFields.fields(definition))
+			if (field.getName().equals(name))
+				return field;
+		throw new IllegalStateException("Missing model override field: " + name);
 	}
 
 	private ModelOverride makeUnique(int uuid, ModelOverride parent) {
